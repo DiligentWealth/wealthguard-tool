@@ -222,12 +222,18 @@ export default function WealthGuardTool() {
 
   const generatePDF = () => {
     try {
-      // Create a more comprehensive print command
-      if (typeof window !== 'undefined' && window.print) {
-        window.print();
-      } else {
-        alert('Print function is not available. Please use your browser menu: File > Print > Save as PDF');
-      }
+      // Hide interactive elements and show print-only summary
+      document.getElementById('interactive-content').style.display = 'none';
+      document.getElementById('print-summary').style.display = 'block';
+      
+      // Trigger print
+      window.print();
+      
+      // Restore interactive view after print dialog closes
+      setTimeout(() => {
+        document.getElementById('interactive-content').style.display = 'block';
+        document.getElementById('print-summary').style.display = 'none';
+      }, 1000);
     } catch (error) {
       console.error('Print error:', error);
       alert('Unable to open print dialog. Please use Ctrl+P (Windows) or Cmd+P (Mac) to print.');
@@ -238,13 +244,26 @@ export default function WealthGuardTool() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8">
       <style>{`
         @media print {
-          body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-          .no-print { display: none !important; }
-          .page-break { page-break-before: always; }
-          @page { margin: 1cm; }
+          body { 
+            print-color-adjust: exact; 
+            -webkit-print-color-adjust: exact;
+            margin: 0;
+            padding: 0;
+          }
+          #interactive-content { display: none !important; }
+          #print-summary { display: block !important; }
+          @page { 
+            margin: 2cm;
+            size: A4;
+          }
+        }
+        #print-summary {
+          display: none;
         }
       `}</style>
       
+      {/* Interactive Content - Shown on screen */}
+      <div id="interactive-content">
       <div className="max-w-7xl mx-auto">
         <div className="bg-white rounded-lg shadow-lg p-8 mb-6">
           <div className="flex items-center justify-between mb-6">
@@ -707,6 +726,243 @@ export default function WealthGuardTool() {
             <p>CONFIDENTIAL - For Diligent Wealth Management and client use only</p>
             <p className="mt-2">This document contains projections based on assumptions and should not be considered as financial advice. 
             Past performance is not indicative of future results. Please consult with your financial advisor for personalized guidance.</p>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      {/* Print Summary - Only shown when printing */}
+      <div id="print-summary">
+        <div className="max-w-4xl mx-auto bg-white p-12">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-8 pb-6 border-b-2 border-slate-300">
+            <div>
+              <img 
+                src="https://www.diligentwealth.co.nz/s/WealthGuard-Logo.jpg" 
+                alt="WealthGuard"
+                className="h-20 mb-2"
+              />
+            </div>
+            <div className="text-right">
+              <img 
+                src="https://www.diligentwealth.co.nz/s/Diligent-Logo-Main.png" 
+                alt="Diligent Wealth Management"
+                className="h-12 mb-2"
+              />
+              <p className="text-xs text-slate-600">CONFIDENTIAL</p>
+            </div>
+          </div>
+
+          {/* Title */}
+          <div className="mb-8">
+            <h1 className="text-3xl font-bold text-slate-800 mb-2">WealthGuard Investment Strategy</h1>
+            <p className="text-lg text-slate-600">Statement of Advice Summary</p>
+          </div>
+
+          {/* Client Information */}
+          <div className="mb-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Client Information</h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Client Name:</p>
+                <p className="text-base text-slate-900">{clientName || 'Not specified'}</p>
+              </div>
+              {partnerName && (
+                <div>
+                  <p className="text-sm font-semibold text-slate-700">Partner Name:</p>
+                  <p className="text-base text-slate-900">{partnerName}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Account Type:</p>
+                <p className="text-base text-slate-900">{isJoint ? 'Joint' : 'Single'}</p>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Annual Superannuation:</p>
+                <p className="text-base text-slate-900">${superannuation.toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Current Portfolio */}
+          <div className="mb-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Current Portfolio Position</h2>
+            <div className="mb-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-300">
+                    <th className="text-left py-2 font-semibold text-slate-700">Asset</th>
+                    <th className="text-right py-2 font-semibold text-slate-700">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Cash</td>
+                    <td className="text-right">${cash.toLocaleString()}</td>
+                  </tr>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Term Deposits</td>
+                    <td className="text-right">${termDeposits.toLocaleString()}</td>
+                  </tr>
+                  {currentInvestments.map((inv, idx) => (
+                    <tr key={inv.id} className="border-b border-slate-200">
+                      <td className="py-2">{inv.label || `Investment ${idx + 1}`}</td>
+                      <td className="text-right">${inv.amount.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  <tr className="font-bold border-t-2 border-slate-300">
+                    <td className="py-2">Total Portfolio Value</td>
+                    <td className="text-right">${totalPortfolio.toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Investment Strategy */}
+          <div className="mb-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Recommended Investment Strategy</h2>
+            
+            {yearsUntilRetirement > 0 && (
+              <div className="mb-6">
+                <h3 className="text-base font-semibold text-slate-800 mb-3">Accumulation Phase ({yearsUntilRetirement} years)</h3>
+                <div className="bg-slate-50 p-4 rounded mb-3">
+                  <p className="text-sm mb-2"><strong>Regular Contributions:</strong> ${contributionAmount.toLocaleString()} {contributionFrequency} (${annualContribution.toLocaleString()}/year)</p>
+                  <p className="text-sm mb-3"><strong>Portfolio Allocation:</strong></p>
+                  <div className="grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <p className="font-semibold">Cash Savings</p>
+                      <p>{accumulationAllocations.cashSavings}%</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold">Balanced Portfolio</p>
+                      <p>{accumulationAllocations.balancedPortfolio}%</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold">Growth Portfolio</p>
+                      <p>{accumulationAllocations.growthPortfolio}%</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <h3 className="text-base font-semibold text-slate-800 mb-3">Retirement Phase Allocation</h3>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-300">
+                    <th className="text-left py-2 font-semibold text-slate-700">Bucket</th>
+                    <th className="text-center py-2 font-semibold text-slate-700">Allocation</th>
+                    <th className="text-right py-2 font-semibold text-slate-700">Amount</th>
+                    <th className="text-right py-2 font-semibold text-slate-700">Expected Return</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Cash Savings (Liquidity Reserve)</td>
+                    <td className="text-center">{allocations.cashSavings}%</td>
+                    <td className="text-right">${currentAllocations.cashSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                    <td className="text-right">{returns.cashSavings}%</td>
+                  </tr>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Term Deposit (Capital Preservation)</td>
+                    <td className="text-center">{allocations.termDeposit}%</td>
+                    <td className="text-right">${currentAllocations.termDeposit.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                    <td className="text-right">{returns.capitalPreservation}%</td>
+                  </tr>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Income Portfolio (Income Generator)</td>
+                    <td className="text-center">{allocations.incomePortfolio}%</td>
+                    <td className="text-right">${currentAllocations.incomePortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                    <td className="text-right">{returns.incomeGenerator}%</td>
+                  </tr>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Balanced Portfolio (Steady Growth)</td>
+                    <td className="text-center">{allocations.balancedPortfolio}%</td>
+                    <td className="text-right">${currentAllocations.balancedPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                    <td className="text-right">{returns.steadyGrowth}%</td>
+                  </tr>
+                  <tr className="border-b border-slate-200">
+                    <td className="py-2">Growth Portfolio (Strategic Growth)</td>
+                    <td className="text-center">{allocations.growthPortfolio}%</td>
+                    <td className="text-right">${currentAllocations.growthPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                    <td className="text-right">{returns.strategicGrowth}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Income Requirements */}
+          <div className="mb-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Retirement Income Strategy</h2>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="font-semibold text-slate-700">Required Annual Income:</p>
+                <p className="text-base">${annualIncome.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-slate-700">Annual Superannuation:</p>
+                <p className="text-base">${superannuation.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-slate-700">Income from Portfolio:</p>
+                <p className="text-base">${incomeOverSuper.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-slate-700">Inflation Adjustment:</p>
+                <p className="text-base">2% annually</p>
+              </div>
+            </div>
+            <div className="mt-4 p-3 bg-blue-50 rounded text-sm">
+              <p><strong>Drawdown Strategy:</strong> Income requirements above superannuation will be drawn proportionally from Income Generator, Steady Growth, and Strategic Growth buckets, with annual increases to account for inflation.</p>
+            </div>
+          </div>
+
+          {/* Projected Outcomes */}
+          <div className="mb-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Projected Portfolio Value</h2>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-300">
+                  <th className="text-left py-2 font-semibold text-slate-700">Timeframe</th>
+                  <th className="text-right py-2 font-semibold text-slate-700">Projected Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[5, 10, 15, 20, 25, 30].filter(y => y <= yearsUntilRetirement + projectionYears).map(year => {
+                  const projection = calculateProjections[year];
+                  return projection ? (
+                    <tr key={year} className="border-b border-slate-200">
+                      <td className="py-2">Year {year}</td>
+                      <td className="text-right">${projection.Total.toLocaleString()}</td>
+                    </tr>
+                  ) : null;
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Strategy Overview */}
+          <div className="mb-8">
+            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">WealthGuard Strategy Overview</h2>
+            <div className="text-sm space-y-3">
+              <p><strong>Liquidity Reserve (1-2 years):</strong> Cash savings providing immediate access for emergencies and market downturns.</p>
+              <p><strong>Capital Preservation (1-2 years):</strong> Fixed interest holdings offering security and stable returns outside equities markets.</p>
+              <p><strong>Income Generator (3-4 years):</strong> Income-producing assets generating regular cash flow regardless of market conditions.</p>
+              <p><strong>Steady Growth (5-7 years):</strong> Balanced investments in established companies with strong track records and robust balance sheets.</p>
+              <p><strong>Strategic Growth (8+ years):</strong> Growth-focused investments in high-potential sectors capturing long-term global trends.</p>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="mt-12 pt-6 border-t border-slate-300 text-xs text-slate-600">
+            <p className="mb-2"><strong>Important Information:</strong></p>
+            <p className="mb-2">This document contains projections based on assumptions about future returns and should not be considered as financial advice or a guarantee of future performance. Past performance is not indicative of future results.</p>
+            <p className="mb-2">The WealthGuard strategy is designed to provide diversification and risk management throughout your financial journey. Regular reviews and adjustments are recommended to ensure alignment with your goals and circumstances.</p>
+            <p className="mt-4"><strong>Prepared by Diligent Wealth Management</strong></p>
+            <p>Date: {new Date().toLocaleDateString('en-NZ', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
           </div>
         </div>
       </div>
