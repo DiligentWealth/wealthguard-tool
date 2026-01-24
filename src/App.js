@@ -6,11 +6,14 @@ export default function WealthGuardTool() {
   const [clientName, setClientName] = useState('');
   const [partnerName, setPartnerName] = useState('');
   const [isJoint, setIsJoint] = useState(false);
+  const [clientAge, setClientAge] = useState(60);
+  const [partnerAge, setPartnerAge] = useState(60);
+  const [retirementAge, setRetirementAge] = useState(65);
   
   const [currentInvestments, setCurrentInvestments] = useState([
-    { id: 1, label: '', amount: 200000 },
-    { id: 2, label: '', amount: 370000 },
-    { id: 3, label: '', amount: 270763 }
+    { id: 1, label: '', amount: 200000, isKiwiSaver: false },
+    { id: 2, label: '', amount: 370000, isKiwiSaver: false },
+    { id: 3, label: '', amount: 270763, isKiwiSaver: false }
   ]);
   
   const [cash, setCash] = useState(36000);
@@ -44,8 +47,30 @@ export default function WealthGuardTool() {
     strategicGrowth: 7.5
   });
 
-  const superannuation = isJoint ? 43056 : 27998;
-  const incomeOverSuper = Math.max(0, annualIncome - superannuation);
+  const superannuationEligibilityAge = 65;
+  
+  // Calculate years until each person reaches super eligibility
+  const yearsUntilClientSuper = Math.max(0, superannuationEligibilityAge - clientAge);
+  const yearsUntilPartnerSuper = isJoint ? Math.max(0, superannuationEligibilityAge - partnerAge) : 0;
+  
+  // Calculate superannuation income based on years into retirement and ages
+  const getSuperannuationForYear = (year) => {
+    const clientCurrentAge = clientAge + yearsUntilRetirement + year;
+    const partnerCurrentAge = isJoint ? partnerAge + yearsUntilRetirement + year : 0;
+    
+    const clientEligible = clientCurrentAge >= superannuationEligibilityAge;
+    const partnerEligible = isJoint && partnerCurrentAge >= superannuationEligibilityAge;
+    
+    if (clientEligible && partnerEligible) {
+      return 43056; // Both eligible
+    } else if (clientEligible || partnerEligible) {
+      return 27998; // One eligible
+    }
+    return 0; // Neither eligible yet
+  };
+  
+  const currentSuperannuation = getSuperannuationForYear(0);
+  const incomeOverSuper = Math.max(0, annualIncome - currentSuperannuation);
   
   // Calculate annual contribution based on frequency
   const annualContribution = contributionFrequency === 'weekly' 
@@ -63,14 +88,15 @@ export default function WealthGuardTool() {
     setCurrentInvestments([...currentInvestments, { 
       id: Date.now(), 
       label: '', 
-      amount: 0 
+      amount: 0,
+      isKiwiSaver: false
     }]);
   };
 
   const removeInvestment = (id) => {
-    if (currentInvestments.length > 1) {
-      setCurrentInvestments(currentInvestments.filter(inv => inv.id !== id));
-    }
+    // Don't allow removing the first two KiwiSaver entries
+    if (id <= 2) return;
+    setCurrentInvestments(currentInvestments.filter(inv => inv.id !== id));
   };
 
   const updateInvestment = (id, field, value) => {
@@ -91,7 +117,6 @@ export default function WealthGuardTool() {
     let termDepBucket = 0;
     let incomeBucket = 0;
     
-    let currentDrawdown = incomeOverSuper;
     const inflationRate = 0.02; // 2% annual inflation
 
     for (let year = 0; year <= yearsUntilRetirement + projectionYears; year++) {
@@ -148,6 +173,12 @@ export default function WealthGuardTool() {
 
         // Drawdown only during retirement
         if (isRetired) {
+          // Calculate super for this specific year in retirement
+          const yearsIntoRetirement = year - yearsUntilRetirement;
+          const yearSuper = getSuperannuationForYear(yearsIntoRetirement);
+          const inflatedAnnualIncome = annualIncome * Math.pow(1 + inflationRate, yearsIntoRetirement);
+          const currentDrawdown = Math.max(0, inflatedAnnualIncome - yearSuper);
+          
           const totalDrawable = incomeBucket + balancedBucket + growthBucket;
           const incomeRatio = totalDrawable > 0 ? incomeBucket / totalDrawable : 0.33;
           const balancedRatio = totalDrawable > 0 ? balancedBucket / totalDrawable : 0.33;
@@ -156,14 +187,11 @@ export default function WealthGuardTool() {
           incomeBucket = Math.max(0, incomeBucket - (currentDrawdown * incomeRatio));
           balancedBucket = Math.max(0, balancedBucket - (currentDrawdown * balancedRatio));
           growthBucket = Math.max(0, growthBucket - (currentDrawdown * growthRatio));
-
-          // Apply inflation to drawdown for next year
-          currentDrawdown *= (1 + inflationRate);
         }
       }
     }
     return data;
-  }, [totalPortfolio, allocations, accumulationAllocations, returns, incomeOverSuper, yearsUntilRetirement, projectionYears, annualContribution]);
+  }, [totalPortfolio, allocations, accumulationAllocations, returns, annualIncome, yearsUntilRetirement, projectionYears, annualContribution, clientAge, partnerAge, isJoint, getSuperannuationForYear]);
 
   const calculateDrawdown = useMemo(() => {
     const data = [];
@@ -174,23 +202,28 @@ export default function WealthGuardTool() {
     for (let year = 0; year <= yearsUntilRetirement + projectionYears; year++) {
       const isRetired = year >= yearsUntilRetirement;
       
+      // Calculate actual income over super for this specific year
+      const yearSuper = isRetired ? getSuperannuationForYear(year - yearsUntilRetirement) : 0;
+      const yearIncomeOverSuper = Math.max(0, annualIncome - yearSuper);
+      
       if (isRetired) {
-        cumulativeDrawdown += currentAnnualDrawdown;
+        cumulativeDrawdown += yearIncomeOverSuper;
       }
 
       data.push({
         year,
-        'Annual Drawdown': isRetired ? Math.round(currentAnnualDrawdown) : 0,
+        'Annual Drawdown': isRetired ? Math.round(yearIncomeOverSuper) : 0,
         'Cumulative Drawdown': Math.round(cumulativeDrawdown)
       });
 
       // Apply inflation for next year
-      if (isRetired) {
-        currentAnnualDrawdown *= (1 + inflationRate);
+      if (isRetired && year > yearsUntilRetirement) {
+        const inflationFactor = Math.pow(1 + inflationRate, year - yearsUntilRetirement);
+        // Recalculate based on inflated income need
       }
     }
     return data;
-  }, [incomeOverSuper, yearsUntilRetirement, projectionYears]);
+  }, [annualIncome, yearsUntilRetirement, projectionYears, clientAge, partnerAge, isJoint, getSuperannuationForYear]);
 
   const currentAllocations = useMemo(() => {
     return {
@@ -253,9 +286,11 @@ export default function WealthGuardTool() {
           #interactive-content { display: none !important; }
           #print-summary { display: block !important; }
           @page { 
-            margin: 2cm;
+            margin: 1.5cm;
             size: A4;
           }
+          .page-break { page-break-before: always; }
+          .avoid-break { page-break-inside: avoid; }
         }
         #print-summary {
           display: none;
@@ -338,6 +373,34 @@ export default function WealthGuardTool() {
             
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
+                Client Age
+              </label>
+              <input
+                type="number"
+                value={clientAge}
+                onChange={(e) => setClientAge(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Retirement Age
+              </label>
+              <input
+                type="number"
+                value={retirementAge}
+                onChange={(e) => {
+                  const age = parseInt(e.target.value) || 65;
+                  setRetirementAge(age);
+                  setYearsUntilRetirement(Math.max(0, age - clientAge));
+                }}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
                 Partner Name (Optional)
               </label>
               <input
@@ -352,13 +415,33 @@ export default function WealthGuardTool() {
               />
             </div>
 
+            {isJoint && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Partner Age
+                </label>
+                <input
+                  type="number"
+                  value={partnerAge}
+                  onChange={(e) => setPartnerAge(parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                Annual Superannuation
+                Current Superannuation
               </label>
               <div className="w-full px-3 py-2 bg-slate-100 border border-slate-300 rounded-md text-slate-700 font-medium">
-                ${superannuation.toLocaleString()}
+                ${currentSuperannuation.toLocaleString()}
               </div>
+              <p className="text-xs text-slate-500 mt-1">
+                {yearsUntilClientSuper > 0 && `Client eligible in ${yearsUntilClientSuper} years`}
+                {yearsUntilClientSuper > 0 && yearsUntilPartnerSuper > 0 && ', '}
+                {yearsUntilPartnerSuper > 0 && `Partner in ${yearsUntilPartnerSuper} years`}
+                {yearsUntilClientSuper === 0 && yearsUntilPartnerSuper === 0 && 'Both eligible now'}
+              </p>
             </div>
           </div>
         </div>
@@ -393,7 +476,35 @@ export default function WealthGuardTool() {
               </div>
             </div>
 
-            {currentInvestments.map((investment) => (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  {clientName || 'Client'} KiwiSaver
+                </label>
+                <input
+                  type="number"
+                  value={currentInvestments.find(inv => inv.id === 1)?.amount || 0}
+                  onChange={(e) => updateInvestment(1, 'amount', e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              {isJoint && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    {partnerName || 'Partner'} KiwiSaver
+                  </label>
+                  <input
+                    type="number"
+                    value={currentInvestments.find(inv => inv.id === 2)?.amount || 0}
+                    onChange={(e) => updateInvestment(2, 'amount', e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+            </div>
+
+            {currentInvestments.filter(inv => inv.id > 2).map((investment) => (
               <div key={investment.id} className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -403,6 +514,7 @@ export default function WealthGuardTool() {
                     type="text"
                     value={investment.label}
                     onChange={(e) => updateInvestment(investment.id, 'label', e.target.value)}
+                    placeholder="e.g., Managed Fund"
                     className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -422,8 +534,7 @@ export default function WealthGuardTool() {
                   <div className="flex items-end">
                     <button
                       onClick={() => removeInvestment(investment.id)}
-                      disabled={currentInvestments.length === 1}
-                      className="px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                      className="px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
                     >
                       Remove
                     </button>
@@ -463,7 +574,9 @@ export default function WealthGuardTool() {
                   value={yearsUntilRetirement}
                   onChange={(e) => setYearsUntilRetirement(parseInt(e.target.value) || 0)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled
                 />
+                <p className="text-xs text-slate-500 mt-1">Auto-calculated from age and retirement age</p>
               </div>
 
               <div>
@@ -733,85 +846,105 @@ export default function WealthGuardTool() {
 
       {/* Print Summary - Only shown when printing */}
       <div id="print-summary">
-        <div className="max-w-4xl mx-auto bg-white p-12">
+        <div className="max-w-4xl mx-auto bg-white p-8">
           {/* Header */}
-          <div className="flex items-center justify-between mb-8 pb-6 border-b-2 border-slate-300">
+          <div className="flex items-center justify-between mb-6 pb-4 border-b-2 border-slate-300 avoid-break">
             <div>
               <img 
                 src="https://www.diligentwealth.co.nz/s/WealthGuard-Logo.jpg" 
                 alt="WealthGuard"
-                className="h-20 mb-2"
+                className="h-16 mb-2"
               />
             </div>
             <div className="text-right">
               <img 
                 src="https://www.diligentwealth.co.nz/s/Diligent-Logo-Main.png" 
                 alt="Diligent Wealth Management"
-                className="h-12 mb-2"
+                className="h-10 mb-2"
               />
               <p className="text-xs text-slate-600">CONFIDENTIAL</p>
             </div>
           </div>
 
           {/* Title */}
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-slate-800 mb-2">WealthGuard Investment Strategy</h1>
-            <p className="text-lg text-slate-600">Statement of Advice Summary</p>
+          <div className="mb-6 avoid-break">
+            <h1 className="text-2xl font-bold text-slate-800 mb-1">WealthGuard Investment Strategy</h1>
+            <p className="text-base text-slate-600">Statement of Advice Summary</p>
           </div>
 
           {/* Client Information */}
-          <div className="mb-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Client Information</h2>
-            <div className="grid grid-cols-2 gap-4">
+          <div className="mb-6 avoid-break">
+            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Client Information</h2>
+            <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
-                <p className="text-sm font-semibold text-slate-700">Client Name:</p>
-                <p className="text-base text-slate-900">{clientName || 'Not specified'}</p>
+                <p className="text-xs font-semibold text-slate-700">Client Name:</p>
+                <p className="text-sm text-slate-900">{clientName || 'Not specified'}</p>
               </div>
               {partnerName && (
                 <div>
-                  <p className="text-sm font-semibold text-slate-700">Partner Name:</p>
-                  <p className="text-base text-slate-900">{partnerName}</p>
+                  <p className="text-xs font-semibold text-slate-700">Partner Name:</p>
+                  <p className="text-sm text-slate-900">{partnerName}</p>
                 </div>
               )}
               <div>
-                <p className="text-sm font-semibold text-slate-700">Account Type:</p>
-                <p className="text-base text-slate-900">{isJoint ? 'Joint' : 'Single'}</p>
+                <p className="text-xs font-semibold text-slate-700">Client Age:</p>
+                <p className="text-sm text-slate-900">{clientAge}</p>
+              </div>
+              {isJoint && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-700">Partner Age:</p>
+                  <p className="text-sm text-slate-900">{partnerAge}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-xs font-semibold text-slate-700">Account Type:</p>
+                <p className="text-sm text-slate-900">{isJoint ? 'Joint' : 'Single'}</p>
               </div>
               <div>
-                <p className="text-sm font-semibold text-slate-700">Annual Superannuation:</p>
-                <p className="text-base text-slate-900">${superannuation.toLocaleString()}</p>
+                <p className="text-xs font-semibold text-slate-700">Current Superannuation:</p>
+                <p className="text-sm text-slate-900">${currentSuperannuation.toLocaleString()}</p>
               </div>
             </div>
           </div>
 
           {/* Current Portfolio */}
-          <div className="mb-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Current Portfolio Position</h2>
-            <div className="mb-4">
-              <table className="w-full text-sm">
+          <div className="mb-6 avoid-break">
+            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Current Portfolio Position</h2>
+            <div className="mb-3">
+              <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-slate-300">
-                    <th className="text-left py-2 font-semibold text-slate-700">Asset</th>
-                    <th className="text-right py-2 font-semibold text-slate-700">Amount</th>
+                    <th className="text-left py-1 font-semibold text-slate-700">Asset</th>
+                    <th className="text-right py-1 font-semibold text-slate-700">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Cash</td>
+                    <td className="py-1">Cash</td>
                     <td className="text-right">${cash.toLocaleString()}</td>
                   </tr>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Term Deposits</td>
+                    <td className="py-1">Term Deposits</td>
                     <td className="text-right">${termDeposits.toLocaleString()}</td>
                   </tr>
-                  {currentInvestments.map((inv, idx) => (
+                  <tr className="border-b border-slate-200">
+                    <td className="py-1">{clientName || 'Client'} KiwiSaver</td>
+                    <td className="text-right">${(currentInvestments.find(inv => inv.id === 1)?.amount || 0).toLocaleString()}</td>
+                  </tr>
+                  {isJoint && (
+                    <tr className="border-b border-slate-200">
+                      <td className="py-1">{partnerName || 'Partner'} KiwiSaver</td>
+                      <td className="text-right">${(currentInvestments.find(inv => inv.id === 2)?.amount || 0).toLocaleString()}</td>
+                    </tr>
+                  )}
+                  {currentInvestments.filter(inv => inv.id > 2).map((inv, idx) => (
                     <tr key={inv.id} className="border-b border-slate-200">
-                      <td className="py-2">{inv.label || `Investment ${idx + 1}`}</td>
+                      <td className="py-1">{inv.label || `Investment ${idx + 1}`}</td>
                       <td className="text-right">${inv.amount.toLocaleString()}</td>
                     </tr>
                   ))}
                   <tr className="font-bold border-t-2 border-slate-300">
-                    <td className="py-2">Total Portfolio Value</td>
+                    <td className="py-1">Total Portfolio Value</td>
                     <td className="text-right">${totalPortfolio.toLocaleString()}</td>
                   </tr>
                 </tbody>
@@ -820,16 +953,16 @@ export default function WealthGuardTool() {
           </div>
 
           {/* Investment Strategy */}
-          <div className="mb-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Recommended Investment Strategy</h2>
+          <div className="mb-6 avoid-break">
+            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Recommended Investment Strategy</h2>
             
             {yearsUntilRetirement > 0 && (
-              <div className="mb-6">
-                <h3 className="text-base font-semibold text-slate-800 mb-3">Accumulation Phase ({yearsUntilRetirement} years)</h3>
-                <div className="bg-slate-50 p-4 rounded mb-3">
-                  <p className="text-sm mb-2"><strong>Regular Contributions:</strong> ${contributionAmount.toLocaleString()} {contributionFrequency} (${annualContribution.toLocaleString()}/year)</p>
-                  <p className="text-sm mb-3"><strong>Portfolio Allocation:</strong></p>
-                  <div className="grid grid-cols-3 gap-3 text-sm">
+              <div className="mb-4 avoid-break">
+                <h3 className="text-sm font-semibold text-slate-800 mb-2">Accumulation Phase ({yearsUntilRetirement} years)</h3>
+                <div className="bg-slate-50 p-3 rounded mb-2">
+                  <p className="text-xs mb-2"><strong>Regular Contributions:</strong> ${contributionAmount.toLocaleString()} {contributionFrequency} (${annualContribution.toLocaleString()}/year)</p>
+                  <p className="text-xs mb-2"><strong>Portfolio Allocation:</strong></p>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
                     <div>
                       <p className="font-semibold">Cash Savings</p>
                       <p>{accumulationAllocations.cashSavings}%</p>
@@ -847,44 +980,44 @@ export default function WealthGuardTool() {
               </div>
             )}
 
-            <div>
-              <h3 className="text-base font-semibold text-slate-800 mb-3">Retirement Phase Allocation</h3>
-              <table className="w-full text-sm">
+            <div className="avoid-break">
+              <h3 className="text-sm font-semibold text-slate-800 mb-2">Retirement Phase Allocation</h3>
+              <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-slate-300">
-                    <th className="text-left py-2 font-semibold text-slate-700">Bucket</th>
-                    <th className="text-center py-2 font-semibold text-slate-700">Allocation</th>
-                    <th className="text-right py-2 font-semibold text-slate-700">Amount</th>
-                    <th className="text-right py-2 font-semibold text-slate-700">Expected Return</th>
+                    <th className="text-left py-1 font-semibold text-slate-700">Bucket</th>
+                    <th className="text-center py-1 font-semibold text-slate-700">%</th>
+                    <th className="text-right py-1 font-semibold text-slate-700">Amount</th>
+                    <th className="text-right py-1 font-semibold text-slate-700">Return</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Cash Savings (Liquidity Reserve)</td>
+                    <td className="py-1">Cash Savings</td>
                     <td className="text-center">{allocations.cashSavings}%</td>
                     <td className="text-right">${currentAllocations.cashSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                     <td className="text-right">{returns.cashSavings}%</td>
                   </tr>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Term Deposit (Capital Preservation)</td>
+                    <td className="py-1">Term Deposit</td>
                     <td className="text-center">{allocations.termDeposit}%</td>
                     <td className="text-right">${currentAllocations.termDeposit.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                     <td className="text-right">{returns.capitalPreservation}%</td>
                   </tr>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Income Portfolio (Income Generator)</td>
+                    <td className="py-1">Income Portfolio</td>
                     <td className="text-center">{allocations.incomePortfolio}%</td>
                     <td className="text-right">${currentAllocations.incomePortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                     <td className="text-right">{returns.incomeGenerator}%</td>
                   </tr>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Balanced Portfolio (Steady Growth)</td>
+                    <td className="py-1">Balanced Portfolio</td>
                     <td className="text-center">{allocations.balancedPortfolio}%</td>
                     <td className="text-right">${currentAllocations.balancedPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                     <td className="text-right">{returns.steadyGrowth}%</td>
                   </tr>
                   <tr className="border-b border-slate-200">
-                    <td className="py-2">Growth Portfolio (Strategic Growth)</td>
+                    <td className="py-1">Growth Portfolio</td>
                     <td className="text-center">{allocations.growthPortfolio}%</td>
                     <td className="text-right">${currentAllocations.growthPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                     <td className="text-right">{returns.strategicGrowth}%</td>
@@ -895,73 +1028,91 @@ export default function WealthGuardTool() {
           </div>
 
           {/* Income Requirements */}
-          <div className="mb-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Retirement Income Strategy</h2>
-            <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="mb-6 avoid-break">
+            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Retirement Income Strategy</h2>
+            <div className="grid grid-cols-2 gap-3 text-xs">
               <div>
                 <p className="font-semibold text-slate-700">Required Annual Income:</p>
-                <p className="text-base">${annualIncome.toLocaleString()}</p>
+                <p className="text-sm">${annualIncome.toLocaleString()}</p>
               </div>
               <div>
-                <p className="font-semibold text-slate-700">Annual Superannuation:</p>
-                <p className="text-base">${superannuation.toLocaleString()}</p>
+                <p className="font-semibold text-slate-700">Current Superannuation:</p>
+                <p className="text-sm">${currentSuperannuation.toLocaleString()}</p>
               </div>
               <div>
                 <p className="font-semibold text-slate-700">Income from Portfolio:</p>
-                <p className="text-base">${incomeOverSuper.toLocaleString()}</p>
+                <p className="text-sm">${incomeOverSuper.toLocaleString()}</p>
               </div>
               <div>
                 <p className="font-semibold text-slate-700">Inflation Adjustment:</p>
-                <p className="text-base">2% annually</p>
+                <p className="text-sm">2% annually</p>
               </div>
             </div>
-            <div className="mt-4 p-3 bg-blue-50 rounded text-sm">
-              <p><strong>Drawdown Strategy:</strong> Income requirements above superannuation will be drawn proportionally from Income Generator, Steady Growth, and Strategic Growth buckets, with annual increases to account for inflation.</p>
+          </div>
+
+          {/* Page Break */}
+          <div className="page-break"></div>
+
+          {/* Portfolio Growth Projection Graph */}
+          <div className="mb-6 avoid-break">
+            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Portfolio Growth Projection</h2>
+            <div style={{ width: '100%', height: '320px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={calculateProjections} margin={{ left: 20, right: 20, top: 5, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+                  <YAxis 
+                    tickFormatter={(value) => `${value.toLocaleString()}`}
+                    tick={{ fontSize: 10 }}
+                    width={80}
+                  />
+                  <Tooltip 
+                    formatter={(value) => `${value.toLocaleString('en-US')}`}
+                    labelFormatter={(label) => `Year ${label}`}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '10px' }} />
+                  <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={2} />
+                  <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="Strategic Growth" stroke="#a855f7" strokeWidth={1.5} />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
           </div>
 
-          {/* Projected Outcomes */}
-          <div className="mb-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">Projected Portfolio Value</h2>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-300">
-                  <th className="text-left py-2 font-semibold text-slate-700">Timeframe</th>
-                  <th className="text-right py-2 font-semibold text-slate-700">Projected Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[5, 10, 15, 20, 25, 30].filter(y => y <= yearsUntilRetirement + projectionYears).map(year => {
-                  const projection = calculateProjections[year];
-                  return projection ? (
-                    <tr key={year} className="border-b border-slate-200">
-                      <td className="py-2">Year {year}</td>
-                      <td className="text-right">${projection.Total.toLocaleString()}</td>
-                    </tr>
-                  ) : null;
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Strategy Overview */}
-          <div className="mb-8">
-            <h2 className="text-xl font-bold text-slate-800 mb-4 pb-2 border-b border-slate-300">WealthGuard Strategy Overview</h2>
-            <div className="text-sm space-y-3">
-              <p><strong>Liquidity Reserve (1-2 years):</strong> Cash savings providing immediate access for emergencies and market downturns.</p>
-              <p><strong>Capital Preservation (1-2 years):</strong> Fixed interest holdings offering security and stable returns outside equities markets.</p>
-              <p><strong>Income Generator (3-4 years):</strong> Income-producing assets generating regular cash flow regardless of market conditions.</p>
-              <p><strong>Steady Growth (5-7 years):</strong> Balanced investments in established companies with strong track records and robust balance sheets.</p>
-              <p><strong>Strategic Growth (8+ years):</strong> Growth-focused investments in high-potential sectors capturing long-term global trends.</p>
+          {/* Income Drawdown Projection Graph */}
+          <div className="mb-6 avoid-break">
+            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Income Drawdown Projection</h2>
+            <div style={{ width: '100%', height: '280px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={calculateDrawdown} margin={{ left: 20, right: 20, top: 5, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+                  <YAxis 
+                    tickFormatter={(value) => `${value.toLocaleString()}`}
+                    tick={{ fontSize: 10 }}
+                    width={80}
+                  />
+                  <Tooltip 
+                    formatter={(value) => `${value.toLocaleString('en-US')}`}
+                    labelFormatter={(label) => `Year ${label}`}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '10px' }} />
+                  <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
           </div>
 
           {/* Footer */}
-          <div className="mt-12 pt-6 border-t border-slate-300 text-xs text-slate-600">
+          <div className="mt-6 pt-4 border-t border-slate-300 text-xs text-slate-600 avoid-break">
             <p className="mb-2"><strong>Important Information:</strong></p>
             <p className="mb-2">This document contains projections based on assumptions about future returns and should not be considered as financial advice or a guarantee of future performance. Past performance is not indicative of future results.</p>
             <p className="mb-2">The WealthGuard strategy is designed to provide diversification and risk management throughout your financial journey. Regular reviews and adjustments are recommended to ensure alignment with your goals and circumstances.</p>
-            <p className="mt-4"><strong>Prepared by Diligent Wealth Management</strong></p>
+            <p className="mt-3"><strong>Prepared by Diligent Wealth Management</strong></p>
             <p>Date: {new Date().toLocaleDateString('en-NZ', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
           </div>
         </div>
