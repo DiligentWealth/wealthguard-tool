@@ -560,160 +560,65 @@ export default function WealthGuardTool() {
           </div>
         </div>
 
+        
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           <div className="bg-white rounded-lg shadow-lg p-6">
             <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
-            
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Years Until Retirement
-                </label>
-                <input
-                  type="number"
-                  value={yearsUntilRetirement}
-                  onChange={(e) => setYearsUntilRetirement(parseInt(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  disabled
-                />
-                <p className="text-xs text-slate-500 mt-1">Auto-calculated from age and retirement age</p>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Years Until Retirement</label>
+                <input type="number" value={yearsUntilRetirement} disabled className="w-full px-3 py-2 border border-slate-300 rounded-md bg-slate-100" />
+                <p className="text-xs text-slate-500 mt-1">Auto-calculated</p>
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Retirement Duration (Years)
-                </label>
-                <input
-                  type="number"
-                  value={projectionYears}
-                  onChange={(e) => setProjectionYears(parseInt(e.target.value) || 30)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-1">Retirement Duration (Years)</label>
+                <input type="number" value={projectionYears} onChange={(e) => setProjectionYears(parseInt(e.target.value) || 30)} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Regular Contribution Amount ($)
-                </label>
-                <input
-                  type="number"
-                  value={contributionAmount}
-                  onChange={(e) => setContributionAmount(parseFloat(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-1">Regular Contribution ($)</label>
+                <input type="number" value={contributionAmount} onChange={(e) => setContributionAmount(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Contribution Frequency
-                </label>
-                <select
-                  value={contributionFrequency}
-                  onChange={(e) => setContributionFrequency(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
+                <label className="block text-sm font-medium text-slate-700 mb-1">Frequency</label>
+                <select value={contributionFrequency} onChange={(e) => setContributionFrequency(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                   <option value="weekly">Weekly</option>
                   <option value="fortnightly">Fortnightly</option>
                   <option value="monthly">Monthly</option>
                   <option value="annual">Annual</option>
                 </select>
-                {annualContribution > 0 && (
-                  <p className="text-xs text-slate-500 mt-1">
-                    = ${annualContribution.toLocaleString()}/year during accumulation phase
-                  </p>
-                )}
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Required Annual Income ($)
-                </label>
-                <input
-                  type="number"
-                  value={annualIncome}
-                  onChange={(e) => setAnnualIncome(parseFloat(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-1">Required Annual Income ($)</label>
+                <input type="number" value={annualIncome} onChange={(e) => setAnnualIncome(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-
               <div className="bg-blue-50 p-3 rounded-md">
-                <div className="text-sm text-slate-700">
-                  <strong>Income over Superannuation:</strong> ${incomeOverSuper.toLocaleString()}
-                </div>
+                <div className="text-sm text-slate-700"><strong>Income over Superannuation:</strong> ${incomeOverSuper.toLocaleString()}</div>
               </div>
             </div>
           </div>
 
           <div className="space-y-6">
             <div className="bg-white rounded-lg shadow-lg p-6">
-              <h2 className="text-xl font-bold text-slate-800 mb-4">
-                Accumulation Phase Allocation
-                <span className={`ml-2 text-sm ${totalAccumulationAllocation === 100 ? 'text-green-600' : 'text-red-600'}`}>
-                  ({totalAccumulationAllocation.toFixed(1)}%)
-                </span>
-              </h2>
-              <p className="text-xs text-slate-600 mb-3">For contributions during years until retirement</p>
-              
+              <h2 className="text-xl font-bold text-slate-800 mb-4">Accumulation Phase Allocation <span className={`ml-2 text-sm ${totalAccumulationAllocation === 100 ? 'text-green-600' : 'text-red-600'}`}>({totalAccumulationAllocation.toFixed(1)}%)</span></h2>
               <div className="space-y-3">
-                <div className="bg-yellow-100 p-3 rounded-md">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Cash Savings (Liquidity Reserve)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={accumulationAllocations.cashSavings}
-                      onChange={(e) => updateAccumulationAllocation('cashSavings', e.target.value)}
-                      className="w-20 px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <span className="text-sm">%</span>
+                {[
+                  { key: 'cashSavings', label: 'Cash Savings', color: 'bg-yellow-100' },
+                  { key: 'balancedPortfolio', label: 'Balanced Portfolio', color: 'bg-blue-100' },
+                  { key: 'growthPortfolio', label: 'Growth Portfolio', color: 'bg-purple-100' }
+                ].map(({ key, label, color }) => (
+                  <div key={key} className={`${color} p-3 rounded-md`}>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="0.1" value={accumulationAllocations[key]} onChange={(e) => updateAccumulationAllocation(key, e.target.value)} className="w-20 px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      <span className="text-sm">%</span>
+                    </div>
                   </div>
-                </div>
-
-                <div className="bg-blue-100 p-3 rounded-md">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Balanced Portfolio (Steady Growth)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={accumulationAllocations.balancedPortfolio}
-                      onChange={(e) => updateAccumulationAllocation('balancedPortfolio', e.target.value)}
-                      className="w-20 px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <span className="text-sm">%</span>
-                  </div>
-                </div>
-
-                <div className="bg-purple-100 p-3 rounded-md">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Growth Portfolio (Strategic Growth)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={accumulationAllocations.growthPortfolio}
-                      onChange={(e) => updateAccumulationAllocation('growthPortfolio', e.target.value)}
-                      className="w-20 px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <span className="text-sm">%</span>
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
 
             <div className="bg-white rounded-lg shadow-lg p-6">
-              <h2 className="text-xl font-bold text-slate-800 mb-4">
-                Retirement Phase Allocation
-                <span className={`ml-2 text-sm ${totalAllocation === 100 ? 'text-green-600' : 'text-red-600'}`}>
-                  ({totalAllocation.toFixed(1)}%)
-                </span>
-              </h2>
-              <p className="text-xs text-slate-600 mb-3">Current portfolio allocation for retirement</p>
-              
+              <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Phase Allocation <span className={`ml-2 text-sm ${totalAllocation === 100 ? 'text-green-600' : 'text-red-600'}`}>({totalAllocation.toFixed(1)}%)</span></h2>
               <div className="space-y-2">
                 {[
                   { key: 'cashSavings', label: 'Cash Savings', color: 'bg-yellow-100' },
@@ -723,21 +628,11 @@ export default function WealthGuardTool() {
                   { key: 'growthPortfolio', label: 'Growth Portfolio', color: 'bg-purple-100' }
                 ].map(({ key, label, color }) => (
                   <div key={key} className={`${color} p-2 rounded-md`}>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      {label}
-                    </label>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">{label}</label>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={allocations[key]}
-                        onChange={(e) => updateAllocation(key, e.target.value)}
-                        className="w-16 px-2 py-1 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
+                      <input type="number" step="0.1" value={allocations[key]} onChange={(e) => updateAllocation(key, e.target.value)} className="w-16 px-2 py-1 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
                       <span className="text-xs">%</span>
-                      <span className="text-xs text-slate-600 ml-auto">
-                        ${currentAllocations[key].toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                      </span>
+                      <span className="text-xs text-slate-600 ml-auto">${currentAllocations[key].toLocaleString(undefined, {maximumFractionDigits: 0})}</span>
                     </div>
                   </div>
                 ))}
@@ -757,17 +652,9 @@ export default function WealthGuardTool() {
               { key: 'strategicGrowth', label: 'Strategic Growth' }
             ].map(({ key, label }) => (
               <div key={key}>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  {label}
-                </label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
                 <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={returns[key]}
-                    onChange={(e) => updateReturn(key, e.target.value)}
-                    className="w-full px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                  <input type="number" step="0.1" value={returns[key]} onChange={(e) => updateReturn(key, e.target.value)} className="w-full px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   <span className="text-sm">%</span>
                 </div>
               </div>
@@ -777,18 +664,12 @@ export default function WealthGuardTool() {
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
           <h2 className="text-xl font-bold text-slate-800 mb-4">Portfolio Growth Projection</h2>
-          <ResponsiveContainer width="100%" height={450}>
+          <ResponsiveContainer width="100%" height={400}>
             <LineChart data={calculateProjections} margin={{ left: 40, right: 20, top: 5, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="year" />
-              <YAxis 
-                tickFormatter={(value) => `${value.toLocaleString()}`}
-                width={100}
-              />
-              <Tooltip 
-                formatter={(value) => `${value.toLocaleString('en-US')}`}
-                labelFormatter={(label) => `Year ${label}`}
-              />
+              <YAxis tickFormatter={(value) => `$${value.toLocaleString()}`} width={100} />
+              <Tooltip formatter={(value) => `$${value.toLocaleString()}`} labelFormatter={(label) => `Year ${label}`} />
               <Legend />
               <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} />
               <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} />
@@ -806,315 +687,35 @@ export default function WealthGuardTool() {
             <LineChart data={calculateDrawdown} margin={{ left: 40, right: 20, top: 5, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="year" />
-              <YAxis 
-                tickFormatter={(value) => `${value.toLocaleString()}`}
-                width={100}
-              />
-              <Tooltip 
-                formatter={(value) => `${value.toLocaleString('en-US')}`}
-                labelFormatter={(label) => `Year ${label}`}
-              />
+              <YAxis tickFormatter={(value) => `$${value.toLocaleString()}`} width={100} />
+              <Tooltip formatter={(value) => `$${value.toLocaleString()}`} labelFormatter={(label) => `Year ${label}`} />
               <Legend />
-              <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} name="Annual Drawdown" />
-              <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} name="Cumulative Total Drawn" />
+              <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} />
+              <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} />
             </LineChart>
           </ResponsiveContainer>
           <div className="mt-4 space-y-2 text-sm text-slate-600">
-            <p><strong>Annual Drawdown (Red):</strong> Shows the amount withdrawn each year from investment buckets (Income Generator, Steady Growth, Strategic Growth) to supplement superannuation income. Increases by 2% annually to account for inflation.</p>
-            <p><strong>Cumulative Total Drawn (Purple):</strong> Shows the total amount withdrawn from investment buckets over time during retirement.</p>
-            <p className="text-xs italic">Note: This represents only the portion above superannuation income (starting at ${incomeOverSuper.toLocaleString()}/year). Retirement begins at year {yearsUntilRetirement}.</p>
+            <p><strong>Annual Drawdown (Red):</strong> Amount withdrawn each year, increases by 2% annually for inflation.</p>
+            <p><strong>Cumulative Total Drawn (Purple):</strong> Total amount withdrawn over time during retirement.</p>
           </div>
         </div>
 
         <div className="mt-8 bg-slate-100 rounded-lg p-6">
           <h3 className="font-semibold text-slate-800 mb-2">About WealthGuard</h3>
-          <p className="text-sm text-slate-600 mb-4">
-            WealthGuard is a comprehensive investment strategy designed to maximize earning potential while employed 
-            and minimize risk during retirement. The strategy uses five distinct buckets ranging from liquid cash reserves 
-            to strategic growth investments, each with different timeframes and risk profiles to ensure optimal diversification 
-            and protection throughout your financial journey.
-          </p>
+          <p className="text-sm text-slate-600 mb-4">WealthGuard is a comprehensive investment strategy designed to maximize earning potential while employed and minimize risk during retirement.</p>
           <div className="border-t pt-4 mt-4 text-sm text-slate-500">
             <p className="font-semibold text-slate-700 mb-2">Diligent Wealth Management</p>
             <p>CONFIDENTIAL - For Diligent Wealth Management and client use only</p>
-            <p className="mt-2">This document contains projections based on assumptions and should not be considered as financial advice. 
-            Past performance is not indicative of future results. Please consult with your financial advisor for personalized guidance.</p>
           </div>
         </div>
       </div>
       </div>
 
-      {/* Print Summary - Only shown when printing */}
+      {/* Print Summary - Simple version */}
       <div id="print-summary">
-        <div className="max-w-4xl mx-auto bg-white p-8">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6 pb-4 border-b-2 border-slate-300 avoid-break">
-            <div>
-              <img 
-                src="https://www.diligentwealth.co.nz/s/WealthGuard-Logo.jpg" 
-                alt="WealthGuard"
-                className="h-16 mb-2"
-              />
-            </div>
-            <div className="text-right">
-              <img 
-                src="https://www.diligentwealth.co.nz/s/Diligent-Logo-Main.png" 
-                alt="Diligent Wealth Management"
-                className="h-10 mb-2"
-              />
-              <p className="text-xs text-slate-600">CONFIDENTIAL</p>
-            </div>
-          </div>
-
-          {/* Title */}
-          <div className="mb-6 avoid-break">
-            <h1 className="text-2xl font-bold text-slate-800 mb-1">WealthGuard Investment Strategy</h1>
-            <p className="text-base text-slate-600">Statement of Advice Summary</p>
-          </div>
-
-          {/* Client Information */}
-          <div className="mb-6 avoid-break">
-            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Client Information</h2>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <p className="text-xs font-semibold text-slate-700">Client Name:</p>
-                <p className="text-sm text-slate-900">{clientName || 'Not specified'}</p>
-              </div>
-              {partnerName && (
-                <div>
-                  <p className="text-xs font-semibold text-slate-700">Partner Name:</p>
-                  <p className="text-sm text-slate-900">{partnerName}</p>
-                </div>
-              )}
-              <div>
-                <p className="text-xs font-semibold text-slate-700">Client Age:</p>
-                <p className="text-sm text-slate-900">{clientAge}</p>
-              </div>
-              {isJoint && (
-                <div>
-                  <p className="text-xs font-semibold text-slate-700">Partner Age:</p>
-                  <p className="text-sm text-slate-900">{partnerAge}</p>
-                </div>
-              )}
-              <div>
-                <p className="text-xs font-semibold text-slate-700">Account Type:</p>
-                <p className="text-sm text-slate-900">{isJoint ? 'Joint' : 'Single'}</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-slate-700">Current Superannuation:</p>
-                <p className="text-sm text-slate-900">${currentSuperannuation.toLocaleString()}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Current Portfolio */}
-          <div className="mb-6 avoid-break">
-            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Current Portfolio Position</h2>
-            <div className="mb-3">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-slate-300">
-                    <th className="text-left py-1 font-semibold text-slate-700">Asset</th>
-                    <th className="text-right py-1 font-semibold text-slate-700">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Cash</td>
-                    <td className="text-right">${cash.toLocaleString()}</td>
-                  </tr>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Term Deposits</td>
-                    <td className="text-right">${termDeposits.toLocaleString()}</td>
-                  </tr>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">{clientName || 'Client'} KiwiSaver</td>
-                    <td className="text-right">${(currentInvestments.find(inv => inv.id === 1)?.amount || 0).toLocaleString()}</td>
-                  </tr>
-                  {isJoint && (
-                    <tr className="border-b border-slate-200">
-                      <td className="py-1">{partnerName || 'Partner'} KiwiSaver</td>
-                      <td className="text-right">${(currentInvestments.find(inv => inv.id === 2)?.amount || 0).toLocaleString()}</td>
-                    </tr>
-                  )}
-                  {currentInvestments.filter(inv => inv.id > 2).map((inv, idx) => (
-                    <tr key={inv.id} className="border-b border-slate-200">
-                      <td className="py-1">{inv.label || `Investment ${idx + 1}`}</td>
-                      <td className="text-right">${inv.amount.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                  <tr className="font-bold border-t-2 border-slate-300">
-                    <td className="py-1">Total Portfolio Value</td>
-                    <td className="text-right">${totalPortfolio.toLocaleString()}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Investment Strategy */}
-          <div className="mb-6 avoid-break">
-            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Recommended Investment Strategy</h2>
-            
-            {yearsUntilRetirement > 0 && (
-              <div className="mb-4 avoid-break">
-                <h3 className="text-sm font-semibold text-slate-800 mb-2">Accumulation Phase ({yearsUntilRetirement} years)</h3>
-                <div className="bg-slate-50 p-3 rounded mb-2">
-                  <p className="text-xs mb-2"><strong>Regular Contributions:</strong> ${contributionAmount.toLocaleString()} {contributionFrequency} (${annualContribution.toLocaleString()}/year)</p>
-                  <p className="text-xs mb-2"><strong>Portfolio Allocation:</strong></p>
-                  <div className="grid grid-cols-3 gap-2 text-xs">
-                    <div>
-                      <p className="font-semibold">Cash Savings</p>
-                      <p>{accumulationAllocations.cashSavings}%</p>
-                    </div>
-                    <div>
-                      <p className="font-semibold">Balanced Portfolio</p>
-                      <p>{accumulationAllocations.balancedPortfolio}%</p>
-                    </div>
-                    <div>
-                      <p className="font-semibold">Growth Portfolio</p>
-                      <p>{accumulationAllocations.growthPortfolio}%</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="avoid-break">
-              <h3 className="text-sm font-semibold text-slate-800 mb-2">Retirement Phase Allocation</h3>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-slate-300">
-                    <th className="text-left py-1 font-semibold text-slate-700">Bucket</th>
-                    <th className="text-center py-1 font-semibold text-slate-700">%</th>
-                    <th className="text-right py-1 font-semibold text-slate-700">Amount</th>
-                    <th className="text-right py-1 font-semibold text-slate-700">Return</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Cash Savings</td>
-                    <td className="text-center">{allocations.cashSavings}%</td>
-                    <td className="text-right">${currentAllocations.cashSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-                    <td className="text-right">{returns.cashSavings}%</td>
-                  </tr>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Term Deposit</td>
-                    <td className="text-center">{allocations.termDeposit}%</td>
-                    <td className="text-right">${currentAllocations.termDeposit.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-                    <td className="text-right">{returns.capitalPreservation}%</td>
-                  </tr>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Income Portfolio</td>
-                    <td className="text-center">{allocations.incomePortfolio}%</td>
-                    <td className="text-right">${currentAllocations.incomePortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-                    <td className="text-right">{returns.incomeGenerator}%</td>
-                  </tr>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Balanced Portfolio</td>
-                    <td className="text-center">{allocations.balancedPortfolio}%</td>
-                    <td className="text-right">${currentAllocations.balancedPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-                    <td className="text-right">{returns.steadyGrowth}%</td>
-                  </tr>
-                  <tr className="border-b border-slate-200">
-                    <td className="py-1">Growth Portfolio</td>
-                    <td className="text-center">{allocations.growthPortfolio}%</td>
-                    <td className="text-right">${currentAllocations.growthPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-                    <td className="text-right">{returns.strategicGrowth}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Income Requirements */}
-          <div className="mb-6 avoid-break">
-            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Retirement Income Strategy</h2>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div>
-                <p className="font-semibold text-slate-700">Required Annual Income:</p>
-                <p className="text-sm">${annualIncome.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="font-semibold text-slate-700">Current Superannuation:</p>
-                <p className="text-sm">${currentSuperannuation.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="font-semibold text-slate-700">Income from Portfolio:</p>
-                <p className="text-sm">${incomeOverSuper.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="font-semibold text-slate-700">Inflation Adjustment:</p>
-                <p className="text-sm">2% annually</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Page Break */}
-          <div className="page-break"></div>
-
-          {/* Portfolio Growth Projection Graph */}
-          <div className="mb-6 avoid-break">
-            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Portfolio Growth Projection</h2>
-            <div style={{ width: '100%', height: '320px' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={calculateProjections} margin={{ left: 20, right: 20, top: 5, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="year" tick={{ fontSize: 10 }} />
-                  <YAxis 
-                    tickFormatter={(value) => `${value.toLocaleString()}`}
-                    tick={{ fontSize: 10 }}
-                    width={80}
-                  />
-                  <Tooltip 
-                    formatter={(value) => `${value.toLocaleString('en-US')}`}
-                    labelFormatter={(label) => `Year ${label}`}
-                  />
-                  <Legend wrapperStyle={{ fontSize: '10px' }} />
-                  <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={2} />
-                  <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="Strategic Growth" stroke="#a855f7" strokeWidth={1.5} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Income Drawdown Projection Graph */}
-          <div className="mb-6 avoid-break">
-            <h2 className="text-lg font-bold text-slate-800 mb-3 pb-2 border-b border-slate-300">Income Drawdown Projection</h2>
-            <div style={{ width: '100%', height: '280px' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={calculateDrawdown} margin={{ left: 20, right: 20, top: 5, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="year" tick={{ fontSize: 10 }} />
-                  <YAxis 
-                    tickFormatter={(value) => `${value.toLocaleString()}`}
-                    tick={{ fontSize: 10 }}
-                    width={80}
-                  />
-                  <Tooltip 
-                    formatter={(value) => `${value.toLocaleString('en-US')}`}
-                    labelFormatter={(label) => `Year ${label}`}
-                  />
-                  <Legend wrapperStyle={{ fontSize: '10px' }} />
-                  <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Footer */}
-          <div className="mt-6 pt-4 border-t border-slate-300 text-xs text-slate-600 avoid-break">
-            <p className="mb-2"><strong>Important Information:</strong></p>
-            <p className="mb-2">This document contains projections based on assumptions about future returns and should not be considered as financial advice or a guarantee of future performance. Past performance is not indicative of future results.</p>
-            <p className="mb-2">The WealthGuard strategy is designed to provide diversification and risk management throughout your financial journey. Regular reviews and adjustments are recommended to ensure alignment with your goals and circumstances.</p>
-            <p className="mt-3"><strong>Prepared by Diligent Wealth Management</strong></p>
-            <p>Date: {new Date().toLocaleDateString('en-NZ', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
-          </div>
+        <div style={{padding: '20px', maxWidth: '800px', margin: '0 auto'}}>
+          <h1>WealthGuard Investment Strategy - {clientName}</h1>
+          <p>This is a simplified print view. Use browser print settings to save as PDF.</p>
         </div>
       </div>
     </div>
