@@ -261,6 +261,22 @@ export default function WealthGuardTool() {
           .shadow-lg, .shadow-xl {
             box-shadow: none !important;
           }
+          
+          /* Chart width constraints for print */
+          .max-w-7xl {
+            max-width: 100% !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+          }
+          
+          .bg-white.rounded-lg {
+            max-width: 100% !important;
+            overflow: hidden !important;
+          }
+          
+          .recharts-responsive-container {
+            max-width: 100% !important;
+          }
         }
         @media screen {
           .print-show { display: none; }
@@ -454,10 +470,10 @@ export default function WealthGuardTool() {
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
           <h2 className="text-xl font-bold mb-4">Portfolio Growth</h2>
           <ResponsiveContainer width="100%" height={380}>
-            <LineChart data={calculateProjections} margin={{left:40,right:20,top:5,bottom:5}}>
+            <LineChart data={calculateProjections} margin={{left:20,right:10,top:5,bottom:5}}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="year"/>
-              <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={100}/>
+              <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={80}/>
               <Tooltip formatter={(v)=>`$${v.toLocaleString()}`}/>
               <Legend/>
               <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
@@ -473,10 +489,10 @@ export default function WealthGuardTool() {
         <div className="bg-white rounded-lg shadow-lg p-6 avoid-break">
           <h2 className="text-xl font-bold mb-4">Income Drawdown</h2>
           <ResponsiveContainer width="100%" height={330}>
-            <LineChart data={calculateDrawdown} margin={{left:40,right:20,top:5,bottom:5}}>
+            <LineChart data={calculateDrawdown} margin={{left:20,right:10,top:5,bottom:5}}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="year"/>
-              <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={100}/>
+              <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={80}/>
               <Tooltip formatter={(v)=>`$${v.toLocaleString()}`}/>
               <Legend/>
               <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
