@@ -10,6 +10,14 @@ export default function WealthGuardTool() {
   const [partnerAge, setPartnerAge] = useState(60);
   const [retirementAge, setRetirementAge] = useState(65);
   
+  // Set page title dynamically based on client names
+  React.useEffect(() => {
+    const names = isJoint && partnerName 
+      ? `${clientName || 'Client'} & ${partnerName}`
+      : clientName || 'Client';
+    document.title = `${names} WealthGuard Strategy`;
+  }, [clientName, partnerName, isJoint]);
+  
   const [currentInvestments, setCurrentInvestments] = useState([
     { id: 1, label: '', amount: 200000 },
     { id: 2, label: '', amount: 370000 },
@@ -239,6 +247,39 @@ export default function WealthGuardTool() {
     growthPortfolio: totalPortfolio * (allocations.growthPortfolio / 100)
   };
 
+  // Calculate maximum sustainable drawdown
+  const calculateMaxDrawdown = useMemo(() => {
+    // Calculate weighted average return based on retirement allocations
+    const weightedReturn = 
+      (allocations.cashSavings / 100) * returns.cashSavings +
+      (allocations.termDeposit / 100) * returns.capitalPreservation +
+      (allocations.incomePortfolio / 100) * returns.incomeGenerator +
+      (allocations.balancedPortfolio / 100) * returns.steadyGrowth +
+      (allocations.growthPortfolio / 100) * returns.strategicGrowth;
+    
+    const avgReturn = weightedReturn / 100; // Convert to decimal
+    const inflationRate = 0.02; // 2% inflation
+    const realReturn = avgReturn - inflationRate; // Real return after inflation
+    const years = projectionYears;
+    
+    // Using the present value of annuity formula adjusted for inflation
+    // Maximum drawdown that depletes portfolio to zero over the timeframe
+    let maxDrawdown;
+    if (realReturn === 0) {
+      // If real return is zero, simple division
+      maxDrawdown = totalPortfolio / years;
+    } else {
+      // PMT = PV × (r × (1 + r)^n) / ((1 + r)^n - 1)
+      // But we want real dollars in year 1, so we adjust for inflation growth
+      const r = realReturn;
+      const n = years;
+      const factor = (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+      maxDrawdown = totalPortfolio * factor;
+    }
+    
+    return Math.max(0, maxDrawdown);
+  }, [totalPortfolio, allocations, returns, projectionYears]);
+
   const handlePrint = () => window.print();
 
   return (
@@ -370,6 +411,7 @@ export default function WealthGuardTool() {
               <tr className="border-b"><td className="py-2 font-medium">Frequency</td><td className="text-right">{contributionFrequency}</td></tr>
               <tr className="border-b"><td className="py-2 font-medium">Annual Income</td><td className="text-right">${annualIncome.toLocaleString()}</td></tr>
               <tr className="font-bold border-t-2"><td className="py-2">Income over Super</td><td className="text-right">${incomeOverSuper.toLocaleString()}/yr</td></tr>
+              <tr className="bg-green-50 border-t-2"><td className="py-2 font-bold text-green-800">Maximum Sustainable Drawdown</td><td className="text-right font-bold text-green-900">${Math.round(calculateMaxDrawdown).toLocaleString()}/yr</td></tr>
               <tr className="border-t pt-2"><td colSpan="2" className="py-2 font-semibold text-slate-700">Retirement Phase Contributions</td></tr>
               <tr className="border-b"><td className="py-2 font-medium">Contribution Amount</td><td className="text-right">${retirementContributionAmount.toLocaleString()}</td></tr>
               <tr className="border-b"><td className="py-2 font-medium">Frequency</td><td className="text-right">{retirementContributionFrequency}</td></tr>
@@ -414,6 +456,11 @@ export default function WealthGuardTool() {
               <div><label className="block text-sm font-medium text-slate-700 mb-1">Frequency</label><select value={contributionFrequency} onChange={(e) => setContributionFrequency(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md"><option value="weekly">Weekly</option><option value="fortnightly">Fortnightly</option><option value="monthly">Monthly</option><option value="annual">Annual</option></select></div>
               <div><label className="block text-sm font-medium text-slate-700 mb-1">Annual Income</label><input type="number" value={annualIncome} onChange={(e) => setAnnualIncome(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
               <div className="bg-blue-50 p-3 rounded-md text-sm"><strong>Income over Super:</strong> ${incomeOverSuper.toLocaleString()}/yr</div>
+              <div className="bg-green-50 p-3 rounded-md text-sm border border-green-200">
+                <div className="font-semibold text-green-800 mb-1">Maximum Sustainable Drawdown</div>
+                <div className="text-lg font-bold text-green-900">${Math.round(calculateMaxDrawdown).toLocaleString()}/yr</div>
+                <div className="text-xs text-green-700 mt-1">Based on {projectionYears} year retirement with inflation-adjusted withdrawals</div>
+              </div>
               <div className="border-t pt-4 mt-4">
                 <h3 className="text-sm font-semibold text-slate-700 mb-3">Retirement Phase Contributions</h3>
                 <div className="space-y-3">
