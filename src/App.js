@@ -22,6 +22,9 @@ export default function WealthGuardTool() {
   const [annualIncome, setAnnualIncome] = useState(30000);
   const [contributionAmount, setContributionAmount] = useState(0);
   const [contributionFrequency, setContributionFrequency] = useState('annual');
+  const [retirementContributionAmount, setRetirementContributionAmount] = useState(0);
+  const [retirementContributionFrequency, setRetirementContributionFrequency] = useState('annual');
+  const [retirementContributionYearsAway, setRetirementContributionYearsAway] = useState(0);
   
   const [allocations, setAllocations] = useState({
     cashSavings: 3.0,
@@ -51,8 +54,28 @@ export default function WealthGuardTool() {
     const partnerCurrentAge = isJoint ? partnerAge + yearsUntilRetirement + year : 0;
     const clientEligible = clientCurrentAge >= 65;
     const partnerEligible = isJoint && partnerCurrentAge >= 65;
-    if (clientEligible && partnerEligible) return 43056;
-    else if (clientEligible || partnerEligible) return 27998;
+    
+    // Base rates (current 2026 rates)
+    const singleRate = 27994.53;
+    const coupleRateEach = 21656.14;
+    
+    // Apply 2% inflation per year
+    const inflationFactor = Math.pow(1.02, year);
+    
+    if (isJoint) {
+      // For couples, both get the couple rate when both eligible
+      if (clientEligible && partnerEligible) {
+        return coupleRateEach * 2 * inflationFactor;
+      } else if (clientEligible || partnerEligible) {
+        // One eligible gets couple rate, other gets nothing
+        return coupleRateEach * inflationFactor;
+      }
+    } else {
+      // Single person gets single rate
+      if (clientEligible) {
+        return singleRate * inflationFactor;
+      }
+    }
     return 0;
   };
   
@@ -63,6 +86,11 @@ export default function WealthGuardTool() {
   const annualContribution = contributionFrequency === 'weekly' ? contributionAmount * 52 
     : contributionFrequency === 'fortnightly' ? contributionAmount * 26
     : contributionFrequency === 'monthly' ? contributionAmount * 12 : contributionAmount;
+
+  const annualRetirementContribution = retirementContributionFrequency === 'oneoff' ? 0 
+    : retirementContributionFrequency === 'weekly' ? retirementContributionAmount * 52 
+    : retirementContributionFrequency === 'fortnightly' ? retirementContributionAmount * 26
+    : retirementContributionFrequency === 'monthly' ? retirementContributionAmount * 12 : retirementContributionAmount;
 
   const totalInvestments = currentInvestments.reduce((sum, inv) => sum + inv.amount, 0);
   const totalPortfolio = cash + termDeposits + totalInvestments;
@@ -117,141 +145,181 @@ export default function WealthGuardTool() {
           const yearSuper = getSuperannuationForYear(yearsInto);
           const inflatedIncome = annualIncome * Math.pow(1.02, yearsInto);
           const drawdown = Math.max(0, inflatedIncome - yearSuper);
-          const totalDrawable = incomeBucket + balancedBucket + growthBucket;
-          if (totalDrawable > 0) {
-            incomeBucket = Math.max(0, incomeBucket - drawdown * (incomeBucket / totalDrawable));
-            balancedBucket = Math.max(0, balancedBucket - drawdown * (balancedBucket / totalDrawable));
-            growthBucket = Math.max(0, growthBucket - drawdown * (growthBucket / totalDrawable));
+          
+          let remaining = drawdown;
+          const totalBucket = cashBucket + termDepBucket + incomeBucket + balancedBucket + growthBucket;
+          if (totalBucket > 0) {
+            const proportions = { cash: cashBucket / totalBucket, termDep: termDepBucket / totalBucket, income: incomeBucket / totalBucket, balanced: balancedBucket / totalBucket, growth: growthBucket / totalBucket };
+            cashBucket = Math.max(0, cashBucket - remaining * proportions.cash);
+            termDepBucket = Math.max(0, termDepBucket - remaining * proportions.termDep);
+            incomeBucket = Math.max(0, incomeBucket - remaining * proportions.income);
+            balancedBucket = Math.max(0, balancedBucket - remaining * proportions.balanced);
+            growthBucket = Math.max(0, growthBucket - remaining * proportions.growth);
+          }
+          
+          // Add regular retirement contributions after drawdown
+          if (annualRetirementContribution > 0) {
+            const totalAfterDrawdown = cashBucket + termDepBucket + incomeBucket + balancedBucket + growthBucket;
+            if (totalAfterDrawdown > 0) {
+              const currentAllocPct = {
+                cash: cashBucket / totalAfterDrawdown,
+                termDep: termDepBucket / totalAfterDrawdown,
+                income: incomeBucket / totalAfterDrawdown,
+                balanced: balancedBucket / totalAfterDrawdown,
+                growth: growthBucket / totalAfterDrawdown
+              };
+              cashBucket += annualRetirementContribution * currentAllocPct.cash;
+              termDepBucket += annualRetirementContribution * currentAllocPct.termDep;
+              incomeBucket += annualRetirementContribution * currentAllocPct.income;
+              balancedBucket += annualRetirementContribution * currentAllocPct.balanced;
+              growthBucket += annualRetirementContribution * currentAllocPct.growth;
+            }
+          }
+          
+          // Add one-off contribution if this is the specified year
+          if (retirementContributionFrequency === 'oneoff' && yearsInto === retirementContributionYearsAway && retirementContributionAmount > 0) {
+            const totalAfterDrawdown = cashBucket + termDepBucket + incomeBucket + balancedBucket + growthBucket;
+            if (totalAfterDrawdown > 0) {
+              const currentAllocPct = {
+                cash: cashBucket / totalAfterDrawdown,
+                termDep: termDepBucket / totalAfterDrawdown,
+                income: incomeBucket / totalAfterDrawdown,
+                balanced: balancedBucket / totalAfterDrawdown,
+                growth: growthBucket / totalAfterDrawdown
+              };
+              cashBucket += retirementContributionAmount * currentAllocPct.cash;
+              termDepBucket += retirementContributionAmount * currentAllocPct.termDep;
+              incomeBucket += retirementContributionAmount * currentAllocPct.income;
+              balancedBucket += retirementContributionAmount * currentAllocPct.balanced;
+              growthBucket += retirementContributionAmount * currentAllocPct.growth;
+            }
           }
         }
       }
     }
     return data;
-  }, [totalPortfolio, allocations, accumulationAllocations, returns, annualIncome, yearsUntilRetirement, projectionYears, annualContribution, clientAge, partnerAge, isJoint]);
+  }, [totalPortfolio, allocations, accumulationAllocations, returns, annualIncome, yearsUntilRetirement, projectionYears, annualContribution, annualRetirementContribution, retirementContributionAmount, retirementContributionFrequency, retirementContributionYearsAway, clientAge, partnerAge, isJoint, retirementAge]);
 
   const calculateDrawdown = useMemo(() => {
     const data = [];
     let cumulative = 0;
-    for (let year = 0; year <= yearsUntilRetirement + projectionYears; year++) {
-      const isRetired = year >= yearsUntilRetirement;
-      const yearsInto = isRetired ? year - yearsUntilRetirement : 0;
-      const yearSuper = isRetired ? getSuperannuationForYear(yearsInto) : 0;
-      const inflatedIncome = isRetired ? annualIncome * Math.pow(1.02, yearsInto) : 0;
-      const drawdown = Math.max(0, inflatedIncome - yearSuper);
-      if (isRetired) cumulative += drawdown;
-      data.push({ year, 'Annual Drawdown': Math.round(drawdown), 'Cumulative Drawdown': Math.round(cumulative) });
+    for (let year = 0; year <= projectionYears; year++) {
+      const yearSuper = getSuperannuationForYear(year);
+      const inflatedIncome = annualIncome * Math.pow(1.02, year);
+      const annual = Math.max(0, inflatedIncome - yearSuper);
+      cumulative += annual;
+      data.push({ year, 'Annual Drawdown': Math.round(annual), 'Cumulative Drawdown': Math.round(cumulative) });
     }
     return data;
-  }, [annualIncome, yearsUntilRetirement, projectionYears, clientAge, partnerAge, isJoint]);
+  }, [annualIncome, projectionYears, clientAge, partnerAge, isJoint, retirementAge]);
 
-  const currentAllocations = useMemo(() => ({
+  const totalAllocation = Object.values(allocations).reduce((sum, val) => sum + val, 0);
+  const totalAccumulationAllocation = Object.values(accumulationAllocations).reduce((sum, val) => sum + val, 0);
+
+  const updateAllocation = (key, value) => {
+    const numVal = parseFloat(value) || 0;
+    setAllocations({ ...allocations, [key]: numVal });
+  };
+
+  const updateAccumulationAllocation = (key, value) => {
+    const numVal = parseFloat(value) || 0;
+    setAccumulationAllocations({ ...accumulationAllocations, [key]: numVal });
+  };
+
+  const updateReturn = (key, value) => {
+    const numVal = parseFloat(value) || 0;
+    setReturns({ ...returns, [key]: numVal });
+  };
+
+  const currentAllocations = {
     cashSavings: totalPortfolio * (allocations.cashSavings / 100),
     termDeposit: totalPortfolio * (allocations.termDeposit / 100),
     incomePortfolio: totalPortfolio * (allocations.incomePortfolio / 100),
     balancedPortfolio: totalPortfolio * (allocations.balancedPortfolio / 100),
     growthPortfolio: totalPortfolio * (allocations.growthPortfolio / 100)
-  }), [totalPortfolio, allocations]);
-
-  const totalAllocation = Object.values(allocations).reduce((a, b) => a + b, 0);
-  const totalAccumulationAllocation = Object.values(accumulationAllocations).reduce((a, b) => a + b, 0);
-  const updateAllocation = (key, value) => setAllocations(prev => ({ ...prev, [key]: parseFloat(value) || 0 }));
-  const updateAccumulationAllocation = (key, value) => setAccumulationAllocations(prev => ({ ...prev, [key]: parseFloat(value) || 0 }));
-  const updateReturn = (key, value) => setReturns(prev => ({ ...prev, [key]: parseFloat(value) || 0 }));
-
-  const generatePDF = () => {
-    window.print();
   };
 
+  const handlePrint = () => window.print();
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <style>{`
         @media print {
-          @page { margin: 1cm; size: A4; }
           body { margin: 0; padding: 0; }
           .no-print { display: none !important; }
           .page-break { page-break-before: always; }
           .avoid-break { page-break-inside: avoid; }
+          .print-show { display: block !important; }
+        }
+        @media screen {
+          .print-show { display: none; }
         }
       `}</style>
 
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-white rounded-lg shadow-lg p-8 mb-6">
+      <div className="max-w-7xl mx-auto p-4">
+        <div className="bg-white rounded-lg shadow-xl p-8 mb-6">
           <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-8">
-              <img 
-                src="https://www.diligentwealth.co.nz/s/WealthGuard-Logo.jpg" 
-                alt="WealthGuard" 
-                className="h-28 w-auto" 
-                crossOrigin="anonymous"
-                onError={(e) => {
-                  e.target.style.display = 'none';
-                  e.target.nextElementSibling.style.display = 'flex';
-                }}
-              />
-              <div style={{display: 'none'}} className="flex flex-col items-center justify-center h-28 px-8 bg-gradient-to-r from-amber-500 to-blue-900 rounded-lg">
-                <div className="text-white text-2xl font-bold tracking-wider">WEALTHGUARD</div>
-                <div className="text-white text-xs mt-1">Investment Bucketing Strategy</div>
+            <div className="flex items-center gap-4">
+              <div className="text-slate-800 font-bold text-2xl tracking-tight">WEALTHGUARD</div>
+            </div>
+            <div className="text-right">
+              <div className="text-slate-600 font-semibold text-lg">diligent</div>
+            </div>
+          </div>
+
+          <h1 className="text-3xl font-bold text-slate-800 mb-2">Investment Bucketing Strategy</h1>
+          <h2 className="text-xl text-slate-600 mb-6">Comprehensive Investment Bucketing Strategy</h2>
+
+          <button onClick={handlePrint} className="mb-6 px-6 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 flex items-center gap-2 no-print">
+            <Download size={20} /> Download PDF
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 no-print">
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-bold text-slate-800 mb-4">Client Information</h2>
+            <div className="space-y-4">
+              <div><label className="block text-sm font-medium text-slate-700 mb-1">Client Name</label><input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
+              <div><label className="block text-sm font-medium text-slate-700 mb-1">Client Age</label><input type="number" value={clientAge} onChange={(e) => setClientAge(parseInt(e.target.value) || 60)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
+              <div><label className="block text-sm font-medium text-slate-700 mb-1">Retirement Age</label><input type="number" value={retirementAge} onChange={(e) => setRetirementAge(parseInt(e.target.value) || 65)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
+              <div className="flex items-center gap-2"><input type="checkbox" id="joint" checked={isJoint} onChange={(e) => setIsJoint(e.target.checked)} className="w-4 h-4" /><label htmlFor="joint" className="text-sm font-medium text-slate-700">Joint Account</label></div>
+              {isJoint && (<><div><label className="block text-sm font-medium text-slate-700 mb-1">Partner Name</label><input type="text" value={partnerName} onChange={(e) => setPartnerName(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div><div><label className="block text-sm font-medium text-slate-700 mb-1">Partner Age</label><input type="number" value={partnerAge} onChange={(e) => setPartnerAge(parseInt(e.target.value) || 60)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div></>)}
+              <div className="bg-blue-50 p-3 rounded-md text-sm"><strong>Current Super:</strong> ${Math.round(currentSuperannuation).toLocaleString()}/yr</div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-bold text-slate-800 mb-4">Current Investments</h2>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-sm font-medium mb-1">Cash</label><input type="number" value={cash} onChange={(e) => setCash(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border rounded-md" /></div>
+                <div><label className="block text-sm font-medium mb-1">Term Deposits</label><input type="number" value={termDeposits} onChange={(e) => setTermDeposits(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border rounded-md" /></div>
               </div>
-              <div className="h-20 w-px bg-slate-300"></div>
-              <img 
-                src="https://www.diligentwealth.co.nz/s/Diligent-Logo-Main.png" 
-                alt="Diligent" 
-                className="h-16 w-auto"
-                crossOrigin="anonymous"
-                onError={(e) => {
-                  e.target.style.display = 'none';
-                  e.target.nextElementSibling.style.display = 'flex';
-                }}
-              />
-              <div style={{display: 'none'}} className="flex items-center gap-2 h-16">
-                <div className="w-14 h-14 bg-gradient-to-br from-amber-500 to-amber-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-bold text-2xl">D</span>
+              {currentInvestments.map((inv, idx) => (
+                <div key={inv.id} className="flex gap-2 items-end">
+                  <div className="flex-1"><label className="block text-sm font-medium mb-1">{idx < 2 ? (idx === 0 ? `${clientName || 'Client'} KiwiSaver` : `${partnerName || 'Partner'} KiwiSaver`) : 'Investment'}</label><input type="text" value={inv.label} onChange={(e) => updateInvestment(inv.id, 'label', e.target.value)} placeholder="Label" className="w-full px-3 py-2 border rounded-md text-sm" disabled={idx < 2} /></div>
+                  <div className="flex-1"><label className="block text-sm font-medium mb-1">Amount</label><input type="number" value={inv.amount} onChange={(e) => updateInvestment(inv.id, 'amount', e.target.value)} className="w-full px-3 py-2 border rounded-md" /></div>
+                  {inv.id > 2 && <button onClick={() => removeInvestment(inv.id)} className="px-3 py-2 bg-red-100 text-red-700 rounded-md hover:bg-red-200">✕</button>}
                 </div>
-                <span className="text-4xl font-bold text-slate-800" style={{fontFamily: 'system-ui, sans-serif'}}>diligent</span>
-              </div>
+              ))}
+              <button onClick={addInvestment} className="w-full px-4 py-2 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300">+ Add Investment</button>
+              <div className="mt-4 p-3 bg-slate-100 rounded-md font-bold text-lg">Total Portfolio: ${totalPortfolio.toLocaleString()}</div>
             </div>
-            <button onClick={generatePDF} className="no-print flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold shadow-lg">
-              <Download size={20} /> Export to PDF
-            </button>
           </div>
-          <div className="border-t-4 border-blue-600 pt-4"><p className="text-lg text-slate-600">Comprehensive Investment Bucketing Strategy</p></div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
+        <div className="hidden print:block avoid-break bg-white p-6 mb-6">
           <h2 className="text-xl font-bold text-slate-800 mb-4">Client Information</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">Client Name</label><input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md no-print" /><span className="hidden print:block">{clientName || 'Not specified'}</span></div>
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">Client Age</label><input type="number" value={clientAge} onChange={(e) => setClientAge(parseInt(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md no-print" /><span className="hidden print:block">{clientAge}</span></div>
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">Retirement Age</label><input type="number" value={retirementAge} onChange={(e) => setRetirementAge(parseInt(e.target.value) || 65)} className="w-full px-3 py-2 border border-slate-300 rounded-md no-print" /><span className="hidden print:block">{retirementAge}</span></div>
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">Partner Name</label><input type="text" value={partnerName} onChange={(e) => { setPartnerName(e.target.value); setIsJoint(e.target.value.trim() !== ''); }} className="w-full px-3 py-2 border border-slate-300 rounded-md no-print" /><span className="hidden print:block">{partnerName || '-'}</span></div>
-            {isJoint && <div><label className="block text-sm font-medium text-slate-700 mb-1">Partner Age</label><input type="number" value={partnerAge} onChange={(e) => setPartnerAge(parseInt(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md no-print" /><span className="hidden print:block">{partnerAge}</span></div>}
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">Current Super</label><div className="w-full px-3 py-2 bg-slate-100 border rounded-md font-medium">${currentSuperannuation.toLocaleString()}/yr</div></div>
-          </div>
-        </div>
+          <table className="w-full text-sm border-collapse mb-6">
+            <tbody>
+              <tr className="border-b"><td className="py-2 font-medium">Client Name</td><td className="text-right">{clientName}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Client Age</td><td className="text-right">{clientAge}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Retirement Age</td><td className="text-right">{retirementAge}</td></tr>
+              {isJoint && (<><tr className="border-b"><td className="py-2 font-medium">Partner Name</td><td className="text-right">{partnerName}</td></tr><tr className="border-b"><td className="py-2 font-medium">Partner Age</td><td className="text-right">{partnerAge}</td></tr></>)}
+              <tr className="border-b"><td className="py-2 font-medium">Current Super</td><td className="text-right">${Math.round(currentSuperannuation).toLocaleString()}/yr</td></tr>
+            </tbody>
+          </table>
 
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print">
-          <h2 className="text-xl font-bold text-slate-800 mb-4">Current Investments</h2>
-          <div className="space-y-4 mb-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div><label className="block text-sm font-medium text-slate-700 mb-1">Cash</label><input type="number" value={cash} onChange={(e) => setCash(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
-              <div><label className="block text-sm font-medium text-slate-700 mb-1">Term Deposits</label><input type="number" value={termDeposits} onChange={(e) => setTermDeposits(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><label className="block text-sm font-medium text-slate-700 mb-1">{clientName || 'Client'} KiwiSaver</label><input type="number" value={currentInvestments.find(inv => inv.id === 1)?.amount || 0} onChange={(e) => updateInvestment(1, 'amount', e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
-              {isJoint && <div><label className="block text-sm font-medium text-slate-700 mb-1">{partnerName || 'Partner'} KiwiSaver</label><input type="number" value={currentInvestments.find(inv => inv.id === 2)?.amount || 0} onChange={(e) => updateInvestment(2, 'amount', e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>}
-            </div>
-            {currentInvestments.filter(inv => inv.id > 2).map((inv) => (
-              <div key={inv.id} className="grid grid-cols-2 gap-4">
-                <div><input type="text" value={inv.label} onChange={(e) => updateInvestment(inv.id, 'label', e.target.value)} placeholder="Investment name" className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
-                <div className="flex gap-2"><input type="number" value={inv.amount} onChange={(e) => updateInvestment(inv.id, 'amount', e.target.value)} className="flex-1 px-3 py-2 border border-slate-300 rounded-md" /><button onClick={() => removeInvestment(inv.id)} className="px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600">Remove</button></div>
-              </div>
-            ))}
-          </div>
-          <button onClick={addInvestment} className="w-full px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">+ Add Investment</button>
-          <div className="mt-4 pt-4 border-t"><span className="text-lg font-bold">Total: ${totalPortfolio.toLocaleString()}</span></div>
-        </div>
-
-        <div className="hidden print:block avoid-break mb-6">
           <h3 className="text-lg font-bold mb-3">Current Portfolio</h3>
           <table className="w-full text-sm border-collapse">
             <tbody>
@@ -267,6 +335,50 @@ export default function WealthGuardTool() {
           </table>
         </div>
 
+        <div className="hidden print:block avoid-break bg-white p-6 mb-6">
+          <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
+          <table className="w-full text-sm border-collapse mb-4">
+            <tbody>
+              <tr className="border-b"><td className="py-2 font-medium">Years Until Retirement</td><td className="text-right">{yearsUntilRetirement}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Retirement Years</td><td className="text-right">{projectionYears}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Contribution</td><td className="text-right">${contributionAmount.toLocaleString()}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Frequency</td><td className="text-right">{contributionFrequency}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Annual Income</td><td className="text-right">${annualIncome.toLocaleString()}</td></tr>
+              <tr className="font-bold border-t-2"><td className="py-2">Income over Super</td><td className="text-right">${incomeOverSuper.toLocaleString()}/yr</td></tr>
+              <tr className="border-t pt-2"><td colSpan="2" className="py-2 font-semibold text-slate-700">Retirement Phase Contributions</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Contribution Amount</td><td className="text-right">${retirementContributionAmount.toLocaleString()}</td></tr>
+              <tr className="border-b"><td className="py-2 font-medium">Frequency</td><td className="text-right">{retirementContributionFrequency}</td></tr>
+              {retirementContributionFrequency === 'oneoff' ? (
+                <tr className="font-bold border-t-2"><td className="py-2">One-off in Year</td><td className="text-right">{retirementContributionYearsAway} ({retirementAge + retirementContributionYearsAway} years old)</td></tr>
+              ) : (
+                <tr className="font-bold border-t-2"><td className="py-2">Annual Contribution</td><td className="text-right">${annualRetirementContribution.toLocaleString()}/yr</td></tr>
+              )}
+            </tbody>
+          </table>
+
+          <h3 className="text-lg font-bold mb-3">Accumulation Phase Allocation</h3>
+          <table className="w-full text-sm border-collapse mb-4">
+            <tbody>
+              <tr className="border-b"><td className="py-2">Cash Savings</td><td className="text-right">{accumulationAllocations.cashSavings.toFixed(1)}%</td></tr>
+              <tr className="border-b"><td className="py-2">Balanced Portfolio</td><td className="text-right">{accumulationAllocations.balancedPortfolio.toFixed(1)}%</td></tr>
+              <tr className="border-b"><td className="py-2">Growth Portfolio</td><td className="text-right">{accumulationAllocations.growthPortfolio.toFixed(1)}%</td></tr>
+              <tr className="font-bold border-t-2"><td className="py-2">Total</td><td className="text-right">{totalAccumulationAllocation.toFixed(1)}%</td></tr>
+            </tbody>
+          </table>
+
+          <h3 className="text-lg font-bold mb-3">Retirement Phase Allocation</h3>
+          <table className="w-full text-sm border-collapse">
+            <tbody>
+              <tr className="border-b"><td className="py-2">Cash Savings</td><td className="text-right">{allocations.cashSavings.toFixed(1)}%</td><td className="text-right">${currentAllocations.cashSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}</td></tr>
+              <tr className="border-b"><td className="py-2">Term Deposit</td><td className="text-right">{allocations.termDeposit.toFixed(1)}%</td><td className="text-right">${currentAllocations.termDeposit.toLocaleString(undefined, {maximumFractionDigits: 0})}</td></tr>
+              <tr className="border-b"><td className="py-2">Income Portfolio</td><td className="text-right">{allocations.incomePortfolio.toFixed(1)}%</td><td className="text-right">${currentAllocations.incomePortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td></tr>
+              <tr className="border-b"><td className="py-2">Balanced Portfolio</td><td className="text-right">{allocations.balancedPortfolio.toFixed(1)}%</td><td className="text-right">${currentAllocations.balancedPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td></tr>
+              <tr className="border-b"><td className="py-2">Growth Portfolio</td><td className="text-right">{allocations.growthPortfolio.toFixed(1)}%</td><td className="text-right">${currentAllocations.growthPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td></tr>
+              <tr className="font-bold border-t-2"><td className="py-2">Total</td><td className="text-right">{totalAllocation.toFixed(1)}%</td><td className="text-right">${totalPortfolio.toLocaleString(undefined, {maximumFractionDigits: 0})}</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 no-print">
           <div className="bg-white rounded-lg shadow-lg p-6">
             <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
@@ -277,6 +389,22 @@ export default function WealthGuardTool() {
               <div><label className="block text-sm font-medium text-slate-700 mb-1">Frequency</label><select value={contributionFrequency} onChange={(e) => setContributionFrequency(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md"><option value="weekly">Weekly</option><option value="fortnightly">Fortnightly</option><option value="monthly">Monthly</option><option value="annual">Annual</option></select></div>
               <div><label className="block text-sm font-medium text-slate-700 mb-1">Annual Income</label><input type="number" value={annualIncome} onChange={(e) => setAnnualIncome(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
               <div className="bg-blue-50 p-3 rounded-md text-sm"><strong>Income over Super:</strong> ${incomeOverSuper.toLocaleString()}/yr</div>
+              <div className="border-t pt-4 mt-4">
+                <h3 className="text-sm font-semibold text-slate-700 mb-3">Retirement Phase Contributions</h3>
+                <div className="space-y-3">
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">Contribution Amount</label><input type="number" value={retirementContributionAmount} onChange={(e) => setRetirementContributionAmount(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md" /></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">Frequency</label><select value={retirementContributionFrequency} onChange={(e) => setRetirementContributionFrequency(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-md"><option value="weekly">Weekly</option><option value="fortnightly">Fortnightly</option><option value="monthly">Monthly</option><option value="annual">Annual</option><option value="oneoff">One-off</option></select></div>
+                  {retirementContributionFrequency === 'oneoff' && (
+                    <div><label className="block text-sm font-medium text-slate-700 mb-1">Years After Retirement</label><input type="number" value={retirementContributionYearsAway} onChange={(e) => setRetirementContributionYearsAway(parseInt(e.target.value) || 0)} className="w-full px-3 py-2 border border-slate-300 rounded-md" min="0" /></div>
+                  )}
+                  {retirementContributionFrequency !== 'oneoff' && (
+                    <div className="bg-green-50 p-3 rounded-md text-sm"><strong>Annual Contribution:</strong> ${annualRetirementContribution.toLocaleString()}/yr</div>
+                  )}
+                  {retirementContributionFrequency === 'oneoff' && (
+                    <div className="bg-green-50 p-3 rounded-md text-sm"><strong>One-off in Year:</strong> {retirementContributionYearsAway} ({retirementAge + retirementContributionYearsAway} years old)</div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -349,7 +477,8 @@ export default function WealthGuardTool() {
 
         <div className="hidden print:block mt-6 text-xs text-slate-600">
           <p><strong>Prepared by Diligent Wealth Management</strong> • {new Date().toLocaleDateString('en-NZ')}</p>
-          <p className="mt-2">CONFIDENTIAL - This document contains projections and should not be considered financial advice.</p>
+          <p className="mt-2"><strong>Important information – projections</strong></p>
+          <p className="mt-1">This document contains forward-looking projections based on assumptions, estimates, and information available at the time it was prepared. Projections are illustrative only and are not guarantees of future performance or outcomes. Actual results may differ materially due to changes in markets, legislation, fees, taxation, and individual circumstances. These projections should be read together with the personalised financial advice and disclosures provided by Diligent Wealth Management Limited and should not be relied on in isolation when making financial decisions.</p>
         </div>
 
         <div className="mt-8 bg-slate-100 rounded-lg p-6 no-print">
