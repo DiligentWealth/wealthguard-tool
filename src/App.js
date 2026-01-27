@@ -262,24 +262,23 @@ export default function WealthGuardTool() {
             box-shadow: none !important;
           }
           
-          /* Chart width constraints for print */
+          /* Container width for print */
           .max-w-7xl {
             max-width: 100% !important;
-            padding-left: 0 !important;
-            padding-right: 0 !important;
           }
           
-          .bg-white.rounded-lg {
-            max-width: 100% !important;
-            overflow: hidden !important;
-          }
-          
-          .recharts-responsive-container {
-            max-width: 100% !important;
+          /* Chart containers - fixed size */
+          .chart-container-print {
+            width: 100% !important;
+            max-width: 700px !important;
+            margin: 0 auto !important;
           }
         }
         @media screen {
           .print-show { display: none; }
+          .chart-container-print {
+            width: 100%;
+          }
         }
       `}</style>
 
@@ -469,36 +468,40 @@ export default function WealthGuardTool() {
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
           <h2 className="text-xl font-bold mb-4">Portfolio Growth</h2>
-          <ResponsiveContainer width="100%" height={380}>
-            <LineChart data={calculateProjections} margin={{left:20,right:10,top:5,bottom:5}}>
-              <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="year"/>
-              <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={80}/>
-              <Tooltip formatter={(v)=>`$${v.toLocaleString()}`}/>
-              <Legend/>
-              <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
-              <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Strategic Growth" stroke="#a855f7" strokeWidth={2} dot={false}/>
-            </LineChart>
-          </ResponsiveContainer>
+          <div className="chart-container-print">
+            <ResponsiveContainer width="100%" height={380}>
+              <LineChart data={calculateProjections} margin={{left:20,right:10,top:5,bottom:5}}>
+                <CartesianGrid strokeDasharray="3 3"/>
+                <XAxis dataKey="year"/>
+                <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={80}/>
+                <Tooltip formatter={(v)=>`$${v.toLocaleString()}`}/>
+                <Legend/>
+                <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
+                <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} dot={false}/>
+                <Line type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={2} dot={false}/>
+                <Line type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={2} dot={false}/>
+                <Line type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={2} dot={false}/>
+                <Line type="monotone" dataKey="Strategic Growth" stroke="#a855f7" strokeWidth={2} dot={false}/>
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         <div className="bg-white rounded-lg shadow-lg p-6 avoid-break">
           <h2 className="text-xl font-bold mb-4">Income Drawdown</h2>
-          <ResponsiveContainer width="100%" height={330}>
-            <LineChart data={calculateDrawdown} margin={{left:20,right:10,top:5,bottom:5}}>
-              <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="year"/>
-              <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={80}/>
-              <Tooltip formatter={(v)=>`$${v.toLocaleString()}`}/>
-              <Legend/>
-              <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
-            </LineChart>
-          </ResponsiveContainer>
+          <div className="chart-container-print">
+            <ResponsiveContainer width="100%" height={330}>
+              <LineChart data={calculateDrawdown} margin={{left:20,right:10,top:5,bottom:5}}>
+                <CartesianGrid strokeDasharray="3 3"/>
+                <XAxis dataKey="year"/>
+                <YAxis tickFormatter={(v)=>`$${v.toLocaleString()}`} width={80}/>
+                <Tooltip formatter={(v)=>`$${v.toLocaleString()}`}/>
+                <Legend/>
+                <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
+                <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
           <p className="text-xs mt-3 no-print">Income drawn increases 2% annually for inflation. Retirement starts year {yearsUntilRetirement}.</p>
         </div>
 
