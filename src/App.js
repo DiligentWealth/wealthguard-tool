@@ -262,23 +262,22 @@ export default function WealthGuardTool() {
             box-shadow: none !important;
           }
           
-          /* Container width for print */
-          .max-w-7xl {
-            max-width: 100% !important;
-          }
-          
-          /* Chart containers - fixed size */
+          /* Chart scaling for print - scale down to fit */
           .chart-container-print {
             width: 100% !important;
-            max-width: 700px !important;
-            margin: 0 auto !important;
+            max-width: 100% !important;
+            overflow: visible !important;
+            transform-origin: top left;
+            transform: scale(0.85);
+          }
+          
+          /* Give extra space for scaled charts */
+          .avoid-break {
+            margin-bottom: 2rem !important;
           }
         }
         @media screen {
           .print-show { display: none; }
-          .chart-container-print {
-            width: 100%;
-          }
         }
       `}</style>
 
