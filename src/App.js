@@ -251,26 +251,15 @@ export default function WealthGuardTool() {
           .avoid-break { page-break-inside: avoid; }
           .print-show { display: block !important; }
           
-          /* Chart sizing for print */
-          .recharts-wrapper {
-            width: 100% !important;
-            height: 350px !important;
-          }
-          
-          .recharts-surface {
-            width: 100% !important;
-          }
-          
-          /* Ensure charts fit on page */
-          .bg-white.rounded-lg.shadow-lg {
-            box-shadow: none !important;
-            margin-bottom: 1rem !important;
-          }
-          
           /* Page margins */
           @page {
             margin: 1.5cm;
             size: A4;
+          }
+          
+          /* Remove shadows for print */
+          .shadow-lg, .shadow-xl {
+            box-shadow: none !important;
           }
         }
         @media screen {
@@ -464,7 +453,7 @@ export default function WealthGuardTool() {
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
           <h2 className="text-xl font-bold mb-4">Portfolio Growth</h2>
-          <ResponsiveContainer width="100%" height={350}>
+          <ResponsiveContainer width="100%" height={380}>
             <LineChart data={calculateProjections} margin={{left:40,right:20,top:5,bottom:5}}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="year"/>
@@ -483,7 +472,7 @@ export default function WealthGuardTool() {
 
         <div className="bg-white rounded-lg shadow-lg p-6 avoid-break">
           <h2 className="text-xl font-bold mb-4">Income Drawdown</h2>
-          <ResponsiveContainer width="100%" height={300}>
+          <ResponsiveContainer width="100%" height={330}>
             <LineChart data={calculateDrawdown} margin={{left:40,right:20,top:5,bottom:5}}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="year"/>
