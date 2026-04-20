@@ -503,11 +503,23 @@ export default function WealthGuardTool() {
     setRecSettings(s.recSettings ?? recSettings);
   };
 
+  const suggestScenarioName = () => {
+    const names = [clientName.trim(), partnerName.trim()].filter(Boolean).join(' & ');
+    const date = new Date().toLocaleDateString('en-NZ');
+    const prefix = names || 'Scenario';
+    return `${prefix} - WealthGuard - ${date}`;
+  };
+
+  const toggleScenariosPanel = () => {
+    if (!showScenariosPanel) setNewScenarioName(suggestScenarioName());
+    setShowScenariosPanel(!showScenariosPanel);
+  };
+
   const saveScenario = () => {
-    const name = newScenarioName.trim() || clientName.trim() || `Scenario ${scenarios.length + 1}`;
+    const name = newScenarioName.trim() || suggestScenarioName();
     const scn = { id: 'scn_' + Date.now(), name, savedAt: new Date().toISOString(), data: snapshot() };
     persistScenarios([scn, ...scenarios]);
-    setNewScenarioName('');
+    setNewScenarioName(suggestScenarioName());
   };
 
   const loadScenario = (id) => {
@@ -516,7 +528,7 @@ export default function WealthGuardTool() {
   };
 
   const deleteScenario = (id) => {
-    if (confirm('Delete this scenario?')) persistScenarios(scenarios.filter(s => s.id !== id));
+    if (window.confirm('Delete this scenario?')) persistScenarios(scenarios.filter(s => s.id !== id));
   };
 
   const generatePDF = () => window.print();
@@ -537,6 +549,34 @@ export default function WealthGuardTool() {
     'Required Drawdown': d.drawdownRequired,
     'Cumulative Drawdown': d.cumulativeDrawdown
   }));
+
+  // Custom X-axis tick showing year number + age(s) below
+  const AgeTick = ({ x, y, payload }) => {
+    const yr = payload.value;
+    const cAtYr = clientAge + yr;
+    const pAtYr = partnerAge + yr;
+    return (
+      <g transform={`translate(${x},${y})`}>
+        <text x={0} y={0} dy={12} textAnchor="middle" fill="#475569" fontSize="12">{yr}</text>
+        <text x={0} y={0} dy={26} textAnchor="middle" fill="#94a3b8" fontSize="10">
+          {isJoint ? `${cAtYr} / ${pAtYr}` : cAtYr}
+        </text>
+      </g>
+    );
+  };
+
+  // Choose a tick interval so roughly 10-12 ticks are drawn regardless of timeline length
+  const totalTimelinePoints = yearsUntilRetirement + projectionYears + 1;
+  const tickInterval = Math.max(0, Math.ceil(totalTimelinePoints / 12) - 1);
+
+  // Tooltip label that includes ages
+  const ageTooltipLabel = (yr) => {
+    const cAtYr = clientAge + yr;
+    const pAtYr = partnerAge + yr;
+    return isJoint
+      ? `Year ${yr} — Ages ${cAtYr} / ${pAtYr}`
+      : `Year ${yr} — Age ${cAtYr}`;
+  };
 
   // =============================================================================
   // RENDER
@@ -560,7 +600,6 @@ export default function WealthGuardTool() {
           <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-6 flex-wrap">
               <img src="https://www.diligentwealth.co.nz/s/WealthGuard-Logo.jpg" alt="WealthGuard" className="h-20 md:h-28 w-auto"
-                crossOrigin="anonymous"
                 onError={(e) => { e.target.style.display = 'none'; e.target.nextElementSibling.style.display = 'flex'; }}/>
               <div style={{display:'none'}} className="flex flex-col items-center justify-center h-28 px-8 bg-gradient-to-r from-amber-500 to-blue-900 rounded-lg">
                 <div className="text-white text-2xl font-bold tracking-wider">WEALTHGUARD</div>
@@ -568,7 +607,6 @@ export default function WealthGuardTool() {
               </div>
               <div className="h-16 w-px bg-slate-300 hidden md:block"></div>
               <img src="https://www.diligentwealth.co.nz/s/Diligent-Logo-Main.png" alt="Diligent" className="h-12 md:h-16 w-auto"
-                crossOrigin="anonymous"
                 onError={(e) => { e.target.style.display = 'none'; e.target.nextElementSibling.style.display = 'flex'; }}/>
               <div style={{display:'none'}} className="flex items-center gap-2 h-16">
                 <div className="w-14 h-14 bg-gradient-to-br from-amber-500 to-amber-600 rounded-full flex items-center justify-center">
@@ -578,7 +616,7 @@ export default function WealthGuardTool() {
               </div>
             </div>
             <div className="flex gap-2 no-print">
-              <button onClick={() => setShowScenariosPanel(!showScenariosPanel)}
+              <button onClick={toggleScenariosPanel}
                 className="flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-semibold shadow">
                 <FolderOpen size={18} /> Scenarios ({scenarios.length})
               </button>
@@ -1109,7 +1147,7 @@ export default function WealthGuardTool() {
             </div>
           </div>
           <p className="text-xs opacity-75 mt-4">
-            Calculated via binary search, using the same simulation as the charts. Income and super inflate at 2% p.a.{inflateSuper ? '' : ' (super inflation currently disabled — will understate sustainability)'}.
+            The highest annual income this portfolio can sustain through the full {projectionYears}-year retirement, assuming 2% annual inflation on both spending and NZ Super.{inflateSuper ? '' : ' (Super inflation is currently disabled in settings — this will understate sustainability.)'}
           </p>
         </div>
 
@@ -1132,16 +1170,93 @@ export default function WealthGuardTool() {
 
         <div className="hidden print:block page-break"></div>
 
+        {/* =============== HOW THE DRAWDOWN WORKS =============== */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
+          <h2 className="text-xl font-bold mb-2">How the Drawdown Works</h2>
+          <p className="text-sm text-slate-600 mb-5">
+            In retirement, the WealthGuard strategy pays your regular living expenses in a specific order designed
+            to let long-term investments keep growing while still providing reliable day-to-day cashflow.
+          </p>
+
+          {/* Visual cascade */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-6">
+            {[
+              { label: 'Cash Savings',   color: '#eab308', role: 'Everyday spending',        detail: `${recSettings.cashMonths} months of expenses` },
+              { label: 'Income Generator', color: '#22c55e', role: 'Tops up Cash',           detail: 'Quarterly top-ups' },
+              { label: 'Steady Growth',  color: '#3b82f6', role: 'Tops up Income',           detail: 'Medium-term compounding' },
+              { label: 'Strategic Growth', color: '#a855f7', role: 'Tops up Income',         detail: 'Long-term compounding' },
+              { label: 'Capital Preservation', color: '#f97316', role: 'Emergency reserve',  detail: `${recSettings.tdYears} years of expenses` }
+            ].map((b, i) => (
+              <div key={b.label} className="relative">
+                <div className="rounded-lg p-3 border-l-4 h-full" style={{ borderLeftColor: b.color, backgroundColor: b.color + '15' }}>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: b.color }}>Step {i + 1}</div>
+                  <div className="font-semibold text-sm mt-1">{b.label}</div>
+                  <div className="text-xs text-slate-600 mt-1">{b.role}</div>
+                  <div className="text-xs text-slate-500 mt-1 italic">{b.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Detailed flow */}
+          <div className="space-y-3 text-sm text-slate-700">
+            <div className="flex gap-3 items-start">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center text-yellow-700 font-bold text-sm">1</div>
+              <div>
+                <strong>You spend from Cash Savings.</strong> Your monthly expenses are paid from the Cash bucket, which
+                holds roughly {recSettings.cashMonths} months' worth of living costs — enough that short-term market
+                movements never affect your day-to-day spending.
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-sm">2</div>
+              <div>
+                <strong>Cash is refilled from Income Generator.</strong> Every quarter, we top up Cash from the Income
+                Generator bucket. This bucket is made up of dividend-producing and interest-bearing investments designed
+                to deliver reliable income without heavy volatility.
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-sm">3</div>
+              <div>
+                <strong>Income Generator is refilled from Steady Growth and Strategic Growth.</strong> Once a year, we
+                top up the Income bucket from the two long-term growth buckets. Drawing from them only annually lets
+                them keep compounding for as long as possible, and gives us flexibility to draw more heavily from
+                whichever has performed best.
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-700 font-bold text-sm">4</div>
+              <div>
+                <strong>Capital Preservation is your safety net.</strong> Term deposits hold around {recSettings.tdYears} years
+                of expenses and are only touched in genuine emergencies — such as a prolonged market downturn where we
+                don't want to sell growth assets at a loss. In normal conditions they stay untouched and earn steady
+                interest in the background.
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-slate-200 text-xs text-slate-500">
+            <strong className="text-slate-700">Why this works:</strong> Because you're never forced to sell long-term
+            investments during a market dip to cover this month's groceries, your portfolio has time to ride out
+            volatility. The buckets work together to protect against what's called "sequence of returns risk" — the
+            danger of early retirement losses permanently shrinking your nest egg.
+          </div>
+        </div>
+
         {/* =============== PORTFOLIO GROWTH CHART =============== */}
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
-          <h2 className="text-xl font-bold mb-4">Portfolio Projection</h2>
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={projectionData} margin={{left:40, right:20, top:5, bottom:5}}>
+          <div className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
+            <h2 className="text-xl font-bold">Portfolio Projection</h2>
+            <span className="text-xs text-slate-500">X-axis: year · {isJoint ? 'client / partner age' : 'age'}</span>
+          </div>
+          <ResponsiveContainer width="100%" height={420}>
+            <LineChart data={projectionData} margin={{left:40, right:20, top:5, bottom:10}}>
               <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="year" label={{value: 'Years from now', position: 'insideBottom', offset: -5}}/>
+              <XAxis dataKey="year" tick={<AgeTick/>} height={45} interval={tickInterval}/>
               <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
-              <Tooltip formatter={(v) => `$${v.toLocaleString()}`}/>
-              <Legend/>
+              <Tooltip formatter={(v) => `$${v.toLocaleString()}`} labelFormatter={ageTooltipLabel}/>
+              <Legend wrapperStyle={{paddingTop: '10px'}}/>
               <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
               <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} dot={false}/>
               <Line type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={2} dot={false}/>
@@ -1152,21 +1267,24 @@ export default function WealthGuardTool() {
           </ResponsiveContainer>
           {yearsUntilRetirement > 0 && (
             <p className="text-xs mt-2 text-slate-500 no-print">
-              Accumulation phase: years 0–{yearsUntilRetirement - 1}. Retirement phase begins year {yearsUntilRetirement}.
+              Accumulation phase: years 0–{yearsUntilRetirement - 1} (ages {clientAge}–{clientAge + yearsUntilRetirement - 1}). Retirement phase begins year {yearsUntilRetirement} (age {retirementAge}).
             </p>
           )}
         </div>
 
         {/* =============== INCOME DRAWDOWN CHART =============== */}
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
-          <h2 className="text-xl font-bold mb-4">Income Drawdown</h2>
-          <ResponsiveContainer width="100%" height={350}>
-            <LineChart data={drawdownChartData} margin={{left:40, right:20, top:5, bottom:5}}>
+          <div className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
+            <h2 className="text-xl font-bold">Income Drawdown</h2>
+            <span className="text-xs text-slate-500">X-axis: year · {isJoint ? 'client / partner age' : 'age'}</span>
+          </div>
+          <ResponsiveContainer width="100%" height={370}>
+            <LineChart data={drawdownChartData} margin={{left:40, right:20, top:5, bottom:10}}>
               <CartesianGrid strokeDasharray="3 3"/>
-              <XAxis dataKey="year"/>
+              <XAxis dataKey="year" tick={<AgeTick/>} height={45} interval={tickInterval}/>
               <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
-              <Tooltip formatter={(v) => `$${v.toLocaleString()}`}/>
-              <Legend/>
+              <Tooltip formatter={(v) => `$${v.toLocaleString()}`} labelFormatter={ageTooltipLabel}/>
+              <Legend wrapperStyle={{paddingTop: '10px'}}/>
               <Line type="monotone" dataKey="Required Drawdown" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
               <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
               <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
