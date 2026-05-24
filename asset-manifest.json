@@ -1,15 +1,15 @@
 {
   "files": {
-    "main.css": "/wealthguard-tool/static/css/main.508b4a84.css",
-    "main.js": "/wealthguard-tool/static/js/main.8705867c.js",
+    "main.css": "/wealthguard-tool/static/css/main.3d36f65a.css",
+    "main.js": "/wealthguard-tool/static/js/main.8a3fe4aa.js",
     "static/js/453.4b16a273.chunk.js": "/wealthguard-tool/static/js/453.4b16a273.chunk.js",
     "index.html": "/wealthguard-tool/index.html",
-    "main.508b4a84.css.map": "/wealthguard-tool/static/css/main.508b4a84.css.map",
-    "main.8705867c.js.map": "/wealthguard-tool/static/js/main.8705867c.js.map",
+    "main.3d36f65a.css.map": "/wealthguard-tool/static/css/main.3d36f65a.css.map",
+    "main.8a3fe4aa.js.map": "/wealthguard-tool/static/js/main.8a3fe4aa.js.map",
     "453.4b16a273.chunk.js.map": "/wealthguard-tool/static/js/453.4b16a273.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.508b4a84.css",
-    "static/js/main.8705867c.js"
+    "static/css/main.3d36f65a.css",
+    "static/js/main.8a3fe4aa.js"
   ]
 }
