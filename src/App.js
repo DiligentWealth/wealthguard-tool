@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, ComposedChart, Area, BarChart, Bar
 } from 'recharts';
-import { Download, Save, FolderOpen, Trash2, Plus, X, Sparkles, AlertTriangle, Dices, FileDown, FileUp } from 'lucide-react';
+import { Download, Save, FolderOpen, Trash2, Plus, X, Sparkles, AlertTriangle, Dices, FileDown, FileUp, GitCompare } from 'lucide-react';
 
 // =============================================================================
 // CONSTANTS
@@ -34,6 +34,20 @@ const DEFAULT_VOLATILITIES = {
   steadyGrowth: 10.0,     // diversified / balanced
   strategicGrowth: 14.0   // long-term growth — the real variability
 };
+
+// Quick-nav sidebar sections (screen only). Defined at module scope, not inside the
+// component, since it's a static list — keeping it here means the scroll-spy effect
+// doesn't need it in its dependency array and doesn't get torn down/rebuilt every render.
+const NAV_SECTIONS = [
+  { id: 'sec-client',      label: 'Client Info' },
+  { id: 'sec-investments', label: 'Investments' },
+  { id: 'sec-planning',    label: 'Planning' },
+  { id: 'sec-allocations', label: 'Allocations' },
+  { id: 'sec-returns',     label: 'Returns' },
+  { id: 'sec-maxincome',   label: 'Max Income' },
+  { id: 'sec-charts',      label: 'Charts' },
+  { id: 'sec-montecarlo',  label: 'Monte Carlo' }
+];
 
 const BUCKET_META = [
   { key: 'cashSavings',        label: 'Cash Savings',          color: '#eab308', returnKey: 'cashSavings' },
@@ -146,6 +160,8 @@ function runSimulation(params) {
     yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
     annualKsTotal = 0,
     incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
+    agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
+    badFirstYearEnabled = false, badFirstYearShockPercent = -20,
     accumulationLumpSums, retirementLumpSums,
     getSuperForYear, inflateSuper, cashMonths
   } = params;
@@ -225,6 +241,29 @@ function runSimulation(params) {
     return need - remaining;
   };
 
+  // Down-market cascade: Cash → TD (protect growth) → Income → B+G (last resort).
+  // Used for the "bad first year" stress test — funds the first year of retirement
+  // from the safe buckets so growth assets aren't sold right after a market drop.
+  const retireCascadeDown = (need) => {
+    let remaining = need;
+    if (remaining <= 0) return 0;
+    const fromCash = Math.min(cash, remaining);
+    cash -= fromCash; remaining -= fromCash;
+    if (remaining > 0) {
+      const fromTD = Math.min(termDep, remaining);
+      termDep -= fromTD; remaining -= fromTD;
+    }
+    if (remaining > 0) {
+      const fromIncome = Math.min(income, remaining);
+      income -= fromIncome; remaining -= fromIncome;
+    }
+    if (remaining > 0) {
+      const drawn = takeFromBalancedGrowth(remaining);
+      remaining -= drawn;
+    }
+    return need - remaining;
+  };
+
   // Refill Cash to target from Income first, then Balanced/Growth (NOT from TD)
   const refillCash = (target) => {
     if (cash >= target) return;
@@ -284,6 +323,10 @@ function runSimulation(params) {
     if (year >= totalDuration) { data.push(entry); break; }
 
     const isRetired = year >= yearsUntilRetirement;
+    const yearsIntoRetirement = isRetired ? year - yearsUntilRetirement : -1;
+    // The "bad first year" stress test shocks growth returns and protects growth via
+    // the down-year cascade only in the very first year of retirement.
+    const isShockYear = badFirstYearEnabled && isRetired && yearsIntoRetirement === 0;
 
     // Contributions & lump sums during accumulation
     if (!isRetired) {
@@ -330,19 +373,24 @@ function runSimulation(params) {
     }
 
     // Apply returns — accumulation phase uses its own return assumptions,
-    // retirement phase uses the retirement-strategy returns.
+    // retirement phase uses the retirement-strategy returns. In the "bad first year"
+    // shock year, growth buckets get the shock return instead of their expected one;
+    // Cash, Capital Preservation and Income Generator are unaffected (matching the
+    // Monte Carlo engine's treatment of a down year).
     const accRet = accumulationReturns || {
       cashSavings: returns.cashSavings, balancedPortfolio: returns.steadyGrowth, growthPortfolio: returns.strategicGrowth
     };
-    cash     *= (1 + (isRetired ? returns.cashSavings   : accRet.cashSavings) / 100);
+    const balancedReturnPct = isShockYear ? badFirstYearShockPercent : (isRetired ? returns.steadyGrowth : accRet.balancedPortfolio);
+    const growthReturnPct   = isShockYear ? badFirstYearShockPercent : (isRetired ? returns.strategicGrowth : accRet.growthPortfolio);
+    cash     *= (1 + (isRetired ? returns.cashSavings : accRet.cashSavings) / 100);
     termDep  *= (1 + returns.capitalPreservation / 100);
     income   *= (1 + returns.incomeGenerator / 100);
-    balanced *= (1 + (isRetired ? returns.steadyGrowth   : accRet.balancedPortfolio) / 100);
-    growth   *= (1 + (isRetired ? returns.strategicGrowth : accRet.growthPortfolio) / 100);
+    balanced *= (1 + balancedReturnPct / 100);
+    growth   *= (1 + growthReturnPct / 100);
 
     // Income drawdown
     if (isRetired) {
-      const yearsInto = year - yearsUntilRetirement;
+      const yearsInto = yearsIntoRetirement;
       const baseSuper = getSuperForYear(yearsInto);
       const yearSuper = inflateSuper ? baseSuper * Math.pow(1 + INFLATION_RATE, yearsInto) : baseSuper;
 
@@ -352,22 +400,35 @@ function runSimulation(params) {
         : 1;
       const effectiveIncome = annualIncome * reductionFactor;
       const inflatedIncome = effectiveIncome * Math.pow(1 + INFLATION_RATE, yearsInto);
-      const drawdownNeeded = Math.max(0, inflatedIncome - yearSuper);
 
-      // 1. Draw expenses through the cascade (Cash → Income → B+G → TD)
-      const actual = retireCascade(drawdownNeeded);
+      // Aged care: an additional cost from a chosen year of retirement, inflated the
+      // same way as income, for a set duration (0 = ongoing for the rest of the plan).
+      const agedCareActive = agedCareEnabled && yearsInto >= agedCareStartYear &&
+        (agedCareDurationYears <= 0 || yearsInto < agedCareStartYear + agedCareDurationYears);
+      const inflatedAgedCare = agedCareActive
+        ? agedCareAnnualCost * Math.pow(1 + INFLATION_RATE, yearsInto)
+        : 0;
 
-      // 2. Replenish Cash to target from Income, then B+G (not TD)
-      const cashTarget = inflatedIncome * (cashMonths / 12);
-      refillCash(cashTarget);
+      const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper);
 
-      // 3. Replenish Income to target from B+G (not TD)
-      refillIncome(incomeTarget);
+      // 1. Draw expenses through the cascade — protective (down-year) cascade in the
+      // shock year, normal cascade otherwise (Cash → Income → B+G → TD).
+      const actual = isShockYear ? retireCascadeDown(drawdownNeeded) : retireCascade(drawdownNeeded);
+
+      // 2. Replenish Cash to target from Income, then B+G (not TD) — skipped in the
+      // shock year so growth isn't touched to top up cash right after a market drop.
+      if (!isShockYear) {
+        const cashTarget = inflatedIncome * (cashMonths / 12);
+        refillCash(cashTarget);
+        // 3. Replenish Income to target from B+G (not TD)
+        refillIncome(incomeTarget);
+      }
 
       cumulativeDrawdown += actual;
       entry.drawdownRequired = Math.round(drawdownNeeded);
       entry.drawdownActual   = Math.round(actual);
       entry.superIncome      = Math.round(yearSuper);
+      entry.agedCareCost     = Math.round(inflatedAgedCare);
     }
 
     data.push(entry);
@@ -404,6 +465,7 @@ function runMonteCarloPath(params) {
     yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
     annualKsTotal = 0,
     incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
+    agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
     accumulationLumpSums = [], retirementLumpSums = [],
     getSuperForYear, inflateSuper, cashMonths, downYearThreshold = 0
   } = params;
@@ -574,7 +636,14 @@ function runMonteCarloPath(params) {
       const reductionFactor = (incomeReductionEnabled && yearsInto >= incomeReductionAfterYears)
         ? (1 - incomeReductionPercent / 100) : 1;
       const inflatedIncome = annualIncome * reductionFactor * Math.pow(1 + INFLATION_RATE, yearsInto);
-      const drawdownNeeded = Math.max(0, inflatedIncome - yearSuper);
+
+      const agedCareActive = agedCareEnabled && yearsInto >= agedCareStartYear &&
+        (agedCareDurationYears <= 0 || yearsInto < agedCareStartYear + agedCareDurationYears);
+      const inflatedAgedCare = agedCareActive
+        ? agedCareAnnualCost * Math.pow(1 + INFLATION_RATE, yearsInto)
+        : 0;
+
+      const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper);
 
       if (growthWasDown) {
         retireCascadeDown(drawdownNeeded);
@@ -616,6 +685,111 @@ function runMonteCarlo(params, numSims) {
     });
   }
   return { successRate: successes / numSims, bands, depletionYears, numSims };
+}
+
+// =============================================================================
+// SCENARIO COMPARISON — standalone computation from a saved snapshot
+// =============================================================================
+// Reconstructs the same derived values the live form computes (super entitlement,
+// contributions, simulation params) directly from a saved scenario's data blob, so
+// two scenarios can be compared side-by-side WITHOUT loading either into the live
+// form (which would overwrite whatever the adviser is currently working on).
+function computeScenarioSummary(data) {
+  const d = data || {};
+  const clientAge = d.clientAge ?? 60;
+  const partnerAge = d.partnerAge ?? 60;
+  const retirementAge = d.retirementAge ?? 65;
+  const isJoint = (d.partnerName || '').trim() !== '';
+  const yearsUntilRetirement = Math.max(0, retirementAge - clientAge);
+  const livingSituation = d.livingSituation ?? 'single_shared';
+  const useGrossSuper = d.useGrossSuper ?? false;
+  const inflateSuper = d.inflateSuper ?? true;
+
+  const currentInvestments = d.currentInvestments ?? [];
+  const totalInvestments = currentInvestments.reduce((s, i) => s + (i.amount || 0), 0);
+  const totalPortfolio = (d.cash || 0) + (d.termDeposits || 0) + totalInvestments;
+
+  const contributionAmount = d.contributionAmount || 0;
+  const contributionFrequency = d.contributionFrequency || 'annual';
+  const annualContribution =
+    contributionFrequency === 'weekly' ? contributionAmount * 52 :
+    contributionFrequency === 'fortnightly' ? contributionAmount * 26 :
+    contributionFrequency === 'monthly' ? contributionAmount * 12 : contributionAmount;
+
+  const ksEnabled = d.ksEnabled ?? false;
+  const annualKsClient = ksEnabled
+    ? (d.clientSalary || 0) * ((d.clientKsRate || 0) / 100) + (d.clientSalary || 0) * ((d.clientKsEmployer || 0) / 100)
+    : 0;
+  const annualKsPartner = ksEnabled && isJoint
+    ? (d.partnerSalary || 0) * ((d.partnerKsRate || 0) / 100) + (d.partnerSalary || 0) * ((d.partnerKsEmployer || 0) / 100)
+    : 0;
+  const annualKsTotal = annualKsClient + annualKsPartner;
+
+  const getSuperForYear = (yearsIntoRetirement) => {
+    const cAge = clientAge + yearsUntilRetirement + yearsIntoRetirement;
+    const pAge = partnerAge + yearsUntilRetirement + yearsIntoRetirement;
+    const cEligible = cAge >= 65;
+    const pEligible = isJoint && pAge >= 65;
+    const rates = useGrossSuper ? SUPER_RATES_GROSS : SUPER_RATES_NET_M;
+    if (isJoint) {
+      if (cEligible && pEligible) return rates.couple_both_each * 2 * 26;
+      if (cEligible || pEligible) return rates.couple_one * 26;
+      return 0;
+    }
+    if (!cEligible) return 0;
+    return rates[livingSituation] * 26;
+  };
+  const superAtRetirement = getSuperForYear(0);
+
+  const allocations = d.allocations ?? { cashSavings: 3, termDeposit: 12, incomePortfolio: 30, balancedPortfolio: 30, growthPortfolio: 25 };
+  const accumulationAllocations = d.accumulationAllocations ?? { cashSavings: 10, balancedPortfolio: 45, growthPortfolio: 45 };
+  const returns = d.returns ?? { cashSavings: 0.25, capitalPreservation: 4, incomeGenerator: 5, steadyGrowth: 5.5, strategicGrowth: 7.5 };
+  const accumulationReturns = d.accumulationReturns ?? {
+    cashSavings: returns.cashSavings, balancedPortfolio: returns.steadyGrowth, growthPortfolio: returns.strategicGrowth
+  };
+  const recSettings = d.recSettings ?? { cashMonths: 4.5 };
+  const projectionYears = d.projectionYears ?? 30;
+  const annualIncome = d.annualIncome ?? 0;
+  const legacyTarget = Math.max(0, d.legacyTarget || 0);
+
+  const simParams = {
+    totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns,
+    yearsUntilRetirement, projectionYears, annualContribution, annualKsTotal,
+    incomeReductionEnabled: d.incomeReductionEnabled ?? false,
+    incomeReductionAfterYears: d.incomeReductionAfterYears ?? 15,
+    incomeReductionPercent: d.incomeReductionPercent ?? 20,
+    agedCareEnabled: d.agedCareEnabled ?? false,
+    agedCareStartYear: d.agedCareStartYear ?? 20,
+    agedCareAnnualCost: d.agedCareAnnualCost ?? 0,
+    agedCareDurationYears: d.agedCareDurationYears ?? 0,
+    badFirstYearEnabled: false, // comparison view uses the baseline (non-stress) path
+    accumulationLumpSums: d.accumulationLumpSums ?? [],
+    retirementLumpSums: d.retirementLumpSums ?? [],
+    getSuperForYear, inflateSuper,
+    cashMonths: recSettings.cashMonths ?? 4.5
+  };
+
+  const projectionData = runSimulation({ ...simParams, annualIncome });
+  const portfolioAtRetirement = (projectionData.find(p => p.year === yearsUntilRetirement) || {}).Total ?? totalPortfolio;
+  const firstYearDrawdown = Math.max(0, annualIncome - superAtRetirement);
+
+  // Max sustainable income (same binary search as the live app, including legacy target)
+  let low = 0, high = Math.max(annualIncome * 5, 500000, totalPortfolio);
+  for (let i = 0; i < 60; i++) {
+    const mid = (low + high) / 2;
+    const result = runSimulation({ ...simParams, annualIncome: mid });
+    const finalTotal = result[result.length - 1].Total;
+    if (finalTotal > legacyTarget + 1) low = mid; else high = mid;
+  }
+  const maxSustainableIncome = Math.round(low);
+
+  return {
+    clientName: d.clientName || '', partnerName: d.partnerName || '',
+    clientAge, partnerAge, retirementAge, yearsUntilRetirement, projectionYears,
+    totalPortfolio, portfolioAtRetirement, superAtRetirement,
+    annualIncome, firstYearDrawdown, maxSustainableIncome, legacyTarget,
+    projectionData
+  };
 }
 
 // =============================================================================
@@ -665,6 +839,22 @@ export default function WealthGuardTool() {
   const [incomeReductionAfterYears, setIncomeReductionAfterYears] = useState(15);
   const [incomeReductionPercent, setIncomeReductionPercent] = useState(20);
 
+  // --- Aged care cost provision (additional cost from a chosen year of retirement) ---
+  const [agedCareEnabled, setAgedCareEnabled] = useState(false);
+  const [agedCareStartYear, setAgedCareStartYear] = useState(20);
+  const [agedCareAnnualCost, setAgedCareAnnualCost] = useState(50000);
+  const [agedCareDurationYears, setAgedCareDurationYears] = useState(0); // 0 = ongoing
+
+  // --- Bad first year stress test (deterministic sequence-of-returns demonstration) ---
+  const [badFirstYearEnabled, setBadFirstYearEnabled] = useState(false);
+  const [badFirstYearShockPercent, setBadFirstYearShockPercent] = useState(-20);
+
+  // --- Legacy / inheritance target (Max Sustainable Income solves down to this instead of $0) ---
+  const [legacyTarget, setLegacyTarget] = useState(0);
+
+  // --- Display: show all chart dollar figures in today's purchasing power ---
+  const [showTodaysDollars, setShowTodaysDollars] = useState(false);
+
   // --- Lump sums ---
   const [accumulationLumpSums, setAccumulationLumpSums] = useState([]);
   const [retirementLumpSums, setRetirementLumpSums]     = useState([]);
@@ -713,6 +903,9 @@ export default function WealthGuardTool() {
   const [scenarios, setScenarios] = useState([]);
   const [showScenariosPanel, setShowScenariosPanel] = useState(false);
   const [newScenarioName, setNewScenarioName] = useState('');
+  const [showComparePanel, setShowComparePanel] = useState(false);
+  const [compareIdA, setCompareIdA] = useState('current');
+  const [compareIdB, setCompareIdB] = useState('');
 
   // Load scenarios from localStorage on mount
   useEffect(() => {
@@ -734,16 +927,6 @@ export default function WealthGuardTool() {
   const yearsUntilRetirement = Math.max(0, retirementAge - clientAge);
 
   // --- Quick-nav sidebar (screen only) ---
-  const NAV_SECTIONS = [
-    { id: 'sec-client',      label: 'Client Info' },
-    { id: 'sec-investments', label: 'Investments' },
-    { id: 'sec-planning',    label: 'Planning' },
-    { id: 'sec-allocations', label: 'Allocations' },
-    { id: 'sec-returns',     label: 'Returns' },
-    { id: 'sec-maxincome',   label: 'Max Income' },
-    { id: 'sec-charts',      label: 'Charts' },
-    { id: 'sec-montecarlo',  label: 'Monte Carlo' }
-  ];
   const [activeSection, setActiveSection] = useState('sec-client');
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -797,19 +980,6 @@ export default function WealthGuardTool() {
   }, [clientAge, partnerAge, yearsUntilRetirement, isJoint, useGrossSuper, livingSituation]);
 
   const superAtRetirement = getSuperForYear(0);
-  const currentAgeSuper = (() => {
-    // What super the household qualifies for at their *current* age
-    const cEligible = clientAge >= 65;
-    const pEligible = isJoint && partnerAge >= 65;
-    const rates = useGrossSuper ? SUPER_RATES_GROSS : SUPER_RATES_NET_M;
-    if (isJoint) {
-      if (cEligible && pEligible) return rates.couple_both_each * 2 * 26;
-      if (cEligible || pEligible) return rates.couple_one * 26;
-      return 0;
-    }
-    if (!cEligible) return 0;
-    return rates[livingSituation] * 26;
-  })();
 
   // Super at age 65 — shown separately per person if joint with different ages.
   // Each figure is the household's annual super entitlement when THAT person reaches 65,
@@ -850,6 +1020,8 @@ export default function WealthGuardTool() {
     yearsUntilRetirement, projectionYears, annualContribution,
     annualKsTotal,
     incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
+    agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
+    badFirstYearEnabled, badFirstYearShockPercent,
     accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
     cashMonths: recSettings.cashMonths
   }), [totalPortfolio, allocations, accumulationAllocations, returns,
@@ -857,6 +1029,8 @@ export default function WealthGuardTool() {
       yearsUntilRetirement, projectionYears, annualContribution,
       annualKsTotal,
       incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
+      agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
+      badFirstYearEnabled, badFirstYearShockPercent,
       accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
       recSettings.cashMonths]);
 
@@ -870,14 +1044,15 @@ export default function WealthGuardTool() {
     if (totalPortfolio <= 0 || projectionYears <= 0) return 0;
     let low = 0;
     let high = Math.max(annualIncome * 5, 500000, totalPortfolio);
+    const target = Math.max(0, legacyTarget);
     for (let i = 0; i < 60; i++) {
       const mid = (low + high) / 2;
       const result = runSimulation({ ...simulationParams, annualIncome: mid });
       const finalTotal = result[result.length - 1].Total;
-      if (finalTotal > 1) low = mid; else high = mid;
+      if (finalTotal > target + 1) low = mid; else high = mid;
     }
     return Math.round(low);
-  }, [simulationParams, annualIncome, totalPortfolio, projectionYears]);
+  }, [simulationParams, annualIncome, totalPortfolio, projectionYears, legacyTarget]);
 
   const maxSustainableDrawdown = Math.max(0, maxSustainableIncome - superAtRetirement);
 
@@ -958,7 +1133,8 @@ export default function WealthGuardTool() {
     totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns, volatilities,
     annualIncome, projectionYears, mcSettings.downYearThreshold, mcAccumulationEnabled,
     annualContribution, annualKsTotal, incomeReductionEnabled, incomeReductionAfterYears,
-    incomeReductionPercent, accumulationLumpSums, retirementLumpSums, mcSettings.numSims
+    incomeReductionPercent, agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
+    accumulationLumpSums, retirementLumpSums, mcSettings.numSims
   ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lump sum management
@@ -1022,6 +1198,7 @@ export default function WealthGuardTool() {
           yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
           annualKsTotal,
           incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
+          agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
           accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
           cashMonths: recSettings.cashMonths,
           downYearThreshold: mcSettings.downYearThreshold
@@ -1062,6 +1239,8 @@ export default function WealthGuardTool() {
     ksEnabled, clientSalary, partnerSalary,
     clientKsRate, clientKsEmployer, partnerKsRate, partnerKsEmployer,
     incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
+    agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
+    badFirstYearEnabled, badFirstYearShockPercent, legacyTarget, showTodaysDollars,
     accumulationLumpSums, retirementLumpSums,
     allocations, accumulationAllocations, returns, recSettings,
     accumulationReturns, volatilities, mcSettings, mcAccumulationEnabled
@@ -1093,6 +1272,14 @@ export default function WealthGuardTool() {
     setIncomeReductionEnabled(s.incomeReductionEnabled ?? false);
     setIncomeReductionAfterYears(s.incomeReductionAfterYears ?? 15);
     setIncomeReductionPercent(s.incomeReductionPercent ?? 20);
+    setAgedCareEnabled(s.agedCareEnabled ?? false);
+    setAgedCareStartYear(s.agedCareStartYear ?? 20);
+    setAgedCareAnnualCost(s.agedCareAnnualCost ?? 50000);
+    setAgedCareDurationYears(s.agedCareDurationYears ?? 0);
+    setBadFirstYearEnabled(s.badFirstYearEnabled ?? false);
+    setBadFirstYearShockPercent(s.badFirstYearShockPercent ?? -20);
+    setLegacyTarget(s.legacyTarget ?? 0);
+    setShowTodaysDollars(s.showTodaysDollars ?? false);
     setAccumulationLumpSums(s.accumulationLumpSums ?? []);
     setRetirementLumpSums(s.retirementLumpSums ?? []);
     setAllocations(s.allocations ?? allocations);
@@ -1219,13 +1406,53 @@ export default function WealthGuardTool() {
     name: b.label, value: Math.round(accumulationAllocDollars[b.key]), color: b.color
   })).filter(d => d.value > 0);
 
-  // Drawdown chart data
-  const drawdownChartData = projectionData.map(d => ({
+  // Today's-dollars display transform. The simulation itself always runs in nominal
+  // terms internally (that's what's correct for the maths); this only affects what's
+  // charted. Cumulative drawdown is rebuilt by summing each year's already-deflated
+  // annual drawdown, rather than deflating the nominal running total, so it stays
+  // mathematically consistent in real terms rather than a rough approximation.
+  const toTodaysDollars = (data) => {
+    let cumulativeReal = 0;
+    return data.map((d) => {
+      const factor = Math.pow(1 + INFLATION_RATE, d.year);
+      const deflate = (v) => Math.round((v || 0) / factor);
+      const drawdownActualReal = deflate(d.drawdownActual);
+      cumulativeReal += drawdownActualReal;
+      return {
+        ...d,
+        'Cash Savings': deflate(d['Cash Savings']),
+        'Capital Preservation': deflate(d['Capital Preservation']),
+        'Income Generator': deflate(d['Income Generator']),
+        'Steady Growth': deflate(d['Steady Growth']),
+        'Strategic Long Term Growth': deflate(d['Strategic Long Term Growth']),
+        Total: deflate(d.Total),
+        drawdownRequired: deflate(d.drawdownRequired),
+        drawdownActual: drawdownActualReal,
+        cumulativeDrawdown: cumulativeReal,
+        superIncome: deflate(d.superIncome),
+        agedCareCost: deflate(d.agedCareCost)
+      };
+    });
+  };
+  const displayProjectionData = showTodaysDollars ? toTodaysDollars(projectionData) : projectionData;
+
+  // Drawdown chart data — built from the (possibly deflated) display projection so the
+  // two charts always agree on which dollar basis they're showing.
+  const drawdownChartData = displayProjectionData.map(d => ({
     year: d.year,
     'Annual Drawdown': d.drawdownActual,
     'Required Drawdown': d.drawdownRequired,
     'Cumulative Drawdown': d.cumulativeDrawdown
   }));
+
+  // Same today's-dollars treatment for the Monte Carlo fan chart's percentile bands.
+  const toTodaysDollarsBands = (bands) => bands.map((b) => {
+    const factor = Math.pow(1 + INFLATION_RATE, b.year);
+    const d = (v) => Math.round((v || 0) / factor);
+    const p10 = d(b.p10), p25 = d(b.p25), p50 = d(b.p50), p75 = d(b.p75), p90 = d(b.p90);
+    return { year: b.year, p10, p25, p50, p75, p90, base: p10, band10_25: p25 - p10, band25_75: p75 - p25, band75_90: p90 - p75 };
+  });
+  const displayMcBands = mcResults ? (showTodaysDollars ? toTodaysDollarsBands(mcResults.bands) : mcResults.bands) : null;
 
   // Custom X-axis tick showing year number + age(s) below
   const AgeTick = ({ x, y, payload }) => {
@@ -1423,6 +1650,12 @@ export default function WealthGuardTool() {
               </button>
               <input ref={importFileRef} type="file" accept="application/json,.json"
                 onChange={handleImportFile} className="hidden"/>
+              {scenarios.length > 0 && (
+                <button onClick={() => setShowComparePanel(v => !v)}
+                  className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 font-semibold">
+                  <GitCompare size={16}/> Compare
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-500 mb-4 -mt-2">
               Scenarios are stored in this browser only. To move one to another computer, download it (the <FileDown size={11} className="inline"/> icon),
@@ -1456,6 +1689,127 @@ export default function WealthGuardTool() {
             )}
           </div>
         )}
+
+        {/* =============== SCENARIO COMPARISON =============== */}
+        {showComparePanel && (() => {
+          const getScenarioData = (id) => {
+            if (id === 'current') return snapshot();
+            const scn = scenarios.find(s => s.id === id);
+            return scn ? scn.data : null;
+          };
+          const getScenarioLabel = (id) => {
+            if (id === 'current') return 'Current (unsaved)';
+            const scn = scenarios.find(s => s.id === id);
+            return scn ? scn.name : '';
+          };
+          const dataA = compareIdA ? getScenarioData(compareIdA) : null;
+          const dataB = compareIdB ? getScenarioData(compareIdB) : null;
+          const summaryA = dataA ? computeScenarioSummary(dataA) : null;
+          const summaryB = dataB ? computeScenarioSummary(dataB) : null;
+          const labelA = compareIdA ? getScenarioLabel(compareIdA) : '';
+          const labelB = compareIdB ? getScenarioLabel(compareIdB) : '';
+
+          const maxLen = Math.max(summaryA?.projectionData.length || 0, summaryB?.projectionData.length || 0);
+          const compareChartData = [];
+          for (let i = 0; i < maxLen; i++) {
+            compareChartData.push({
+              year: i,
+              TotalA: summaryA?.projectionData[i]?.Total ?? null,
+              TotalB: summaryB?.projectionData[i]?.Total ?? null
+            });
+          }
+
+          const rows = [
+            { label: 'Client', get: (s) => [s.clientName, s.partnerName].filter(Boolean).join(' & ') || '—', money: false },
+            { label: 'Retirement age', get: (s) => s.retirementAge, money: false },
+            { label: 'Years until retirement', get: (s) => s.yearsUntilRetirement, money: false },
+            { label: 'Retirement duration', get: (s) => `${s.projectionYears} yrs`, money: false },
+            { label: 'Portfolio today', get: (s) => s.totalPortfolio, money: true },
+            { label: 'Portfolio at retirement', get: (s) => s.portfolioAtRetirement, money: true },
+            { label: 'NZ Super at retirement', get: (s) => Math.round(s.superAtRetirement), money: true },
+            { label: 'Target income', get: (s) => s.annualIncome, money: true },
+            { label: 'First-year drawdown', get: (s) => Math.round(s.firstYearDrawdown), money: true },
+            { label: 'Max sustainable income', get: (s) => s.maxSustainableIncome, money: true },
+            { label: 'Legacy target', get: (s) => s.legacyTarget, money: true }
+          ];
+
+          return (
+            <div className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print border-2 border-purple-600">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <GitCompare size={20} className="text-purple-600"/> Compare Scenarios
+                </h2>
+                <button onClick={() => setShowComparePanel(false)} className="text-slate-500 hover:text-slate-700"><X size={20}/></button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Scenario A</label>
+                  <select value={compareIdA} onChange={(e) => setCompareIdA(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md">
+                    <option value="current">Current (unsaved)</option>
+                    {scenarios.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Scenario B</label>
+                  <select value={compareIdB} onChange={(e) => setCompareIdB(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md">
+                    <option value="">Select a scenario…</option>
+                    <option value="current">Current (unsaved)</option>
+                    {scenarios.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {summaryA && summaryB ? (
+                <div className="space-y-6">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="border-b-2 text-slate-600">
+                        <th className="text-left py-2 font-medium"></th>
+                        <th className="text-right py-2 font-medium text-blue-700">{labelA}</th>
+                        <th className="text-right py-2 font-medium text-purple-700">{labelB}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => {
+                        const vA = r.get(summaryA), vB = r.get(summaryB);
+                        return (
+                          <tr key={r.label} className="border-b">
+                            <td className="py-1.5 text-slate-600">{r.label}</td>
+                            <td className="text-right font-medium">{r.money ? `$${Number(vA).toLocaleString()}` : vA}</td>
+                            <td className="text-right font-medium">{r.money ? `$${Number(vB).toLocaleString()}` : vB}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+
+                  <div>
+                    <h3 className="font-semibold text-slate-800 mb-2">Portfolio Total — A vs B</h3>
+                    <ResponsiveContainer width="100%" height={320}>
+                      <LineChart data={compareChartData} margin={{left:40, right:20, top:5, bottom:10}}>
+                        <CartesianGrid strokeDasharray="3 3"/>
+                        <XAxis dataKey="year"/>
+                        <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
+                        <Tooltip formatter={(v) => v == null ? 'n/a' : `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`}/>
+                        <Legend/>
+                        <Line type="monotone" dataKey="TotalA" name={`A: ${labelA}`} stroke="#2563eb" strokeWidth={2.5} dot={false} connectNulls/>
+                        <Line type="monotone" dataKey="TotalB" name={`B: ${labelB}`} stroke="#9333ea" strokeWidth={2.5} dot={false} connectNulls/>
+                      </LineChart>
+                    </ResponsiveContainer>
+                    <p className="text-xs text-slate-500 mt-2">
+                      X-axis: years from today (not aligned to retirement age, since the two scenarios may retire at different ages).
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-slate-500 italic text-sm">Choose two scenarios above to compare them side by side.</p>
+              )}
+            </div>
+          );
+        })()}
 
         {/* =============== CLIENT INFO =============== */}
         <div id="sec-client" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
@@ -1883,6 +2237,76 @@ export default function WealthGuardTool() {
             )}
           </div>
 
+          {/* Aged care cost provision */}
+          <div className="mt-6 pt-6 border-t border-slate-200">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="font-semibold text-slate-800">Aged Care Cost Provision</h3>
+                <p className="text-xs text-slate-500">Adds an ongoing or time-limited cost from a chosen year of retirement — e.g. residential care fees.</p>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" checked={agedCareEnabled}
+                  onChange={(e) => setAgedCareEnabled(e.target.checked)}/>
+                Enable
+              </label>
+            </div>
+
+            {agedCareEnabled && (
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">From (years into retirement)</label>
+                  <input type="number" min="0" max={projectionYears} step="1" value={agedCareStartYear}
+                    onChange={(e) => setAgedCareStartYear(parseInt(e.target.value) || 0)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Annual cost (today's $)</label>
+                  <MoneyInput value={agedCareAnnualCost} onChange={setAgedCareAnnualCost}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Duration (years)</label>
+                  <input type="number" min="0" step="1" value={agedCareDurationYears}
+                    onChange={(e) => setAgedCareDurationYears(parseInt(e.target.value) || 0)}
+                    placeholder="0 = ongoing"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                  <p className="text-xs text-slate-400 mt-1">0 = ongoing for the rest of the plan</p>
+                </div>
+                <div className="bg-orange-50 border border-orange-200 p-3 rounded-md text-sm">
+                  <div className="text-xs text-orange-700 uppercase tracking-wide">From year {agedCareStartYear}</div>
+                  <div className="font-semibold">
+                    +${Math.round(agedCareAnnualCost).toLocaleString()}/yr
+                    <span className="text-xs text-slate-500 ml-1">(in today's $, on top of income)</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    From age {retirementAge + agedCareStartYear}
+                    {agedCareDurationYears > 0 && ` for ${agedCareDurationYears} year${agedCareDurationYears !== 1 ? 's' : ''}`}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Legacy / inheritance target */}
+          <div className="mt-6 pt-6 border-t border-slate-200">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="font-semibold text-slate-800">Legacy Target</h3>
+                <p className="text-xs text-slate-500">If set, Maximum Sustainable Income solves down to leave this much remaining, instead of depleting the portfolio to zero.</p>
+              </div>
+            </div>
+            <div className="max-w-xs">
+              <label className="block text-sm font-medium text-slate-700 mb-1">Target amount remaining at end of plan</label>
+              <MoneyInput value={legacyTarget} onChange={setLegacyTarget}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+              {legacyTarget > 0 && (
+                <p className="text-xs text-slate-500 mt-1">
+                  The plan will aim to leave at least ${Math.round(legacyTarget).toLocaleString()} for beneficiaries at the end of the {projectionYears}-year projection.
+                </p>
+              )}
+            </div>
+          </div>
+
           {/* Lump sums */}
           <div className="mt-6 pt-6 border-t border-slate-200">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2105,7 +2529,8 @@ export default function WealthGuardTool() {
 
         {/* =============== RETURNS =============== */}
         <div id="sec-returns" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
-          <h2 className="text-xl font-bold mb-4">Expected Returns (%)</h2>
+          <h2 className="text-xl font-bold mb-1">Expected Returns (%)</h2>
+          <p className="text-xs text-slate-500 mb-4">Figures are net of investment management fees — no separate fee deduction is applied elsewhere in the plan.</p>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             {[
               {k:'cashSavings', l:'Cash'},
@@ -2164,7 +2589,11 @@ export default function WealthGuardTool() {
             <div>
               <div className="text-xs opacity-80 uppercase tracking-wider">Max sustainable income</div>
               <div className="text-3xl font-bold mt-1">${Math.round(maxSustainableIncome).toLocaleString()}<span className="text-lg font-normal">/yr</span></div>
-              <div className="text-xs opacity-80 mt-1">Portfolio depleted at end of year {projectionYears}</div>
+              <div className="text-xs opacity-80 mt-1">
+                {legacyTarget > 0
+                  ? `Leaves ~$${Math.round(legacyTarget).toLocaleString()} at end of year ${projectionYears}`
+                  : `Portfolio depleted at end of year ${projectionYears}`}
+              </div>
             </div>
             <div>
               <div className="text-xs opacity-80 uppercase tracking-wider">Implied first-year drawdown</div>
@@ -2182,7 +2611,11 @@ export default function WealthGuardTool() {
             </div>
           </div>
           <p className="text-xs opacity-75 mt-4">
-            The highest annual income this portfolio can sustain through the full {projectionYears}-year retirement. Income and NZ Super are both increased by 2% each year to keep pace with inflation — so although the first-year figure is shown above, actual drawings grow annually to preserve purchasing power.{inflateSuper ? '' : ' (Super inflation is currently disabled in settings — this will understate sustainability.)'}
+            The highest annual income this portfolio can sustain through the full {projectionYears}-year retirement
+            {legacyTarget > 0 ? <>, while leaving at least <strong>${Math.round(legacyTarget).toLocaleString()}</strong> remaining for beneficiaries</> : ''}.
+            Income and NZ Super are both increased by 2% each year to keep pace with inflation — so although the first-year figure is shown above, actual drawings grow annually to preserve purchasing power.
+            {agedCareEnabled ? ` This figure also allows for the aged care cost provision from year ${agedCareStartYear} of retirement.` : ''}
+            {inflateSuper ? '' : ' (Super inflation is currently disabled in settings — this will understate sustainability.)'}
           </p>
         </div>
 
@@ -2420,7 +2853,8 @@ export default function WealthGuardTool() {
             {/* Sustainability */}
             <p>
               Projecting {projectionYears} years of retirement with the current investment allocations,
-              the portfolio can sustain an annual income of up to <strong>${Math.round(maxSustainableIncome).toLocaleString()}</strong>.
+              the portfolio can sustain an annual income of up to <strong>${Math.round(maxSustainableIncome).toLocaleString()}</strong>
+              {legacyTarget > 0 ? <> while leaving at least <strong>${Math.round(legacyTarget).toLocaleString()}</strong> for beneficiaries</> : ''}.
               {' '}
               {annualIncome <= maxSustainableIncome ? (
                 <>The target of ${Math.round(annualIncome).toLocaleString()} sits at <strong>{((annualIncome / maxSustainableIncome) * 100).toFixed(0)}%</strong> of that ceiling — comfortably within what the plan can support.</>
@@ -2436,6 +2870,16 @@ export default function WealthGuardTool() {
                 the income target reduces by <strong>{incomeReductionPercent}%</strong> to
                 <strong> ${Math.round(annualIncome * (1 - incomeReductionPercent / 100)).toLocaleString()}/yr</strong> in today's dollars —
                 reflecting the typical pattern where travel and active lifestyle spending slows down in the later years of retirement.
+              </p>
+            )}
+
+            {/* Aged care provision, if enabled */}
+            {agedCareEnabled && (
+              <p>
+                From year {agedCareStartYear} of retirement (age {retirementAge + agedCareStartYear}), the plan also allows for
+                an additional <strong>${Math.round(agedCareAnnualCost).toLocaleString()}/yr</strong> in today's dollars
+                {agedCareDurationYears > 0 ? <> for {agedCareDurationYears} year{agedCareDurationYears !== 1 ? 's' : ''}</> : ' ongoing for the rest of the plan'} to
+                cover aged care costs, on top of regular income.
               </p>
             )}
 
@@ -2536,8 +2980,44 @@ export default function WealthGuardTool() {
         <div id="sec-charts" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break wg-card chart-card charts-page nav-anchor">
           <div className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
             <h2 className="text-xl font-bold">Portfolio Projection</h2>
-            <span className="text-xs text-slate-500">X-axis: year · {isJoint ? 'client / partner age' : 'age'}</span>
+            <span className="text-xs text-slate-500">
+              X-axis: year · {isJoint ? 'client / partner age' : 'age'}{showTodaysDollars ? ' · today\'s dollars' : ''}
+            </span>
           </div>
+
+          {/* Display & stress-test toggles */}
+          <div className="no-print flex flex-wrap gap-3 mb-4">
+            <label className="flex items-center gap-2 cursor-pointer text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+              <input type="checkbox" checked={showTodaysDollars}
+                onChange={(e) => setShowTodaysDollars(e.target.checked)}/>
+              Show in today's dollars
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+              <input type="checkbox" checked={badFirstYearEnabled}
+                onChange={(e) => setBadFirstYearEnabled(e.target.checked)}/>
+              Stress test: market drops in year 1 of retirement
+            </label>
+            {badFirstYearEnabled && (
+              <div className="flex items-center gap-2 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <span className="text-red-700">Shock:</span>
+                <input type="number" step="1" max="0" value={badFirstYearShockPercent}
+                  onChange={(e) => setBadFirstYearShockPercent(parseFloat(e.target.value) || 0)}
+                  className="w-16 px-2 py-0.5 border border-red-300 rounded text-sm"/>
+                <span className="text-red-700">% to growth buckets</span>
+              </div>
+            )}
+          </div>
+          {badFirstYearEnabled && (
+            <div className="mb-4 flex items-start gap-2 bg-red-50 border border-red-200 text-red-800 rounded-md p-3 text-sm">
+              <AlertTriangle size={18} className="shrink-0 mt-0.5"/>
+              <div>
+                <strong>Sequence-of-returns stress test active.</strong> Steady Growth and Strategic Long Term Growth take
+                a {Math.abs(badFirstYearShockPercent)}% hit in the very first year of retirement. Watch how the strategy
+                responds: income is funded from Cash and Capital Preservation that year, so growth assets are never sold
+                at a loss right when the shock hits.
+              </div>
+            </div>
+          )}
 
           {/* Live income slider — drag to see the projection respond instantly */}
           <div className="no-print mb-5 bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -2573,7 +3053,7 @@ export default function WealthGuardTool() {
           </div>
 
           <PrintableChart screenHeight={420} printHeight={330}>
-            <LineChart data={projectionData} margin={{left:40, right:20, top:5, bottom:10}}>
+            <LineChart data={displayProjectionData} margin={{left:40, right:20, top:5, bottom:10}}>
               <CartesianGrid strokeDasharray="3 3"/>
               <XAxis dataKey="year" tick={<AgeTick/>} height={45} interval={tickInterval}/>
               <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
@@ -2724,10 +3204,10 @@ export default function WealthGuardTool() {
                 <div className="rounded-lg p-4 border-l-4 bg-slate-50 border-slate-400">
                   <div className="text-xs uppercase tracking-wider text-slate-500">Median end balance</div>
                   <div className="text-4xl font-bold mt-1 text-slate-800">
-                    ${(mcResults.bands[mcResults.bands.length - 1].p50 / 1000).toLocaleString(undefined, {maximumFractionDigits: 0})}k
+                    ${(displayMcBands[displayMcBands.length - 1].p50 / 1000).toLocaleString(undefined, {maximumFractionDigits: 0})}k
                   </div>
                   <div className="text-xs text-slate-600 mt-1">
-                    Half of outcomes finish above this; range shown in the chart below
+                    Half of outcomes finish above this; range shown in the chart below{showTodaysDollars ? ' (today\'s dollars)' : ''}
                   </div>
                 </div>
                 <div className="rounded-lg p-4 border-l-4 bg-slate-50 border-slate-400">
@@ -2748,7 +3228,7 @@ export default function WealthGuardTool() {
                   <span className="text-xs text-slate-500">X-axis: year · {isJoint ? 'client / partner age' : 'age'}</span>
                 </div>
                 <PrintableChart screenHeight={380} printHeight={250}>
-                  <ComposedChart data={mcResults.bands} margin={{left:40, right:20, top:5, bottom:10}}>
+                  <ComposedChart data={displayMcBands} margin={{left:40, right:20, top:5, bottom:10}}>
                     <CartesianGrid strokeDasharray="3 3"/>
                     <XAxis dataKey="year" tick={<AgeTick/>} height={45} interval={tickInterval}/>
                     <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
@@ -2800,7 +3280,8 @@ export default function WealthGuardTool() {
         {/* =============== PRINT FOOTER =============== */}
         <div className="hidden print:block mt-6 text-xs text-slate-600">
           <p><strong>Prepared by Diligent Wealth Management</strong> • {new Date().toLocaleDateString('en-NZ')}</p>
-          <p className="mt-2">CONFIDENTIAL — This document contains projections and should not be considered financial advice.</p>
+          <p className="mt-2">CONFIDENTIAL — This document contains projections and should not be considered financial advice.
+          Return assumptions are net of investment management fees.</p>
         </div>
 
         {/* =============== ABOUT =============== */}
