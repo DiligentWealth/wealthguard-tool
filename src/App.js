@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, ComposedChart, Area, BarChart, Bar
 } from 'recharts';
 import { Download, Save, FolderOpen, Trash2, Plus, X, Sparkles, AlertTriangle, Dices, FileDown, FileUp, GitCompare } from 'lucide-react';
+import { supabase } from './supabaseClient';
 
 // =============================================================================
 // CONSTANTS
@@ -25,7 +26,6 @@ const SUPER_RATES_GROSS = {
 };
 
 const INFLATION_RATE = 0.02;
-const STORAGE_KEY = 'wealthguard_scenarios_v2';
 
 // Default annual volatility (standard deviation, %) for the market-exposed buckets.
 // Cash & Capital Preservation are contractual and carry no volatility.
@@ -907,20 +907,16 @@ export default function WealthGuardTool() {
   const [compareIdA, setCompareIdA] = useState('current');
   const [compareIdB, setCompareIdB] = useState('');
 
-  // Load scenarios from localStorage on mount
+  // Load scenarios from Supabase on mount — shared across the whole team, not per-browser.
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setScenarios(JSON.parse(raw));
-    } catch (e) { console.error('Failed to load scenarios', e); }
+    supabase.from('scenarios').select('*').order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (error) { console.error('Failed to load scenarios', error); return; }
+        setScenarios(data.map(row => ({
+          id: row.id, name: row.name, savedAt: row.created_at, data: row.data
+        })));
+      });
   }, []);
-
-  const persistScenarios = (list) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-      setScenarios(list);
-    } catch (e) { console.error('Failed to save scenarios', e); }
-  };
 
   // --- Derived values ---
   const isJoint = partnerName.trim() !== '';
@@ -1310,10 +1306,14 @@ export default function WealthGuardTool() {
     setShowScenariosPanel(!showScenariosPanel);
   };
 
-  const saveScenario = () => {
+  const saveScenario = async () => {
     const name = newScenarioName.trim() || suggestScenarioName();
-    const scn = { id: 'scn_' + Date.now(), name, savedAt: new Date().toISOString(), data: snapshot() };
-    persistScenarios([scn, ...scenarios]);
+    const { data: userData } = await supabase.auth.getUser();
+    const { data: row, error } = await supabase.from('scenarios')
+      .insert({ name, data: snapshot(), created_by: userData?.user?.email || null })
+      .select().single();
+    if (error) { window.alert('Could not save scenario: ' + error.message); return; }
+    setScenarios([{ id: row.id, name: row.name, savedAt: row.created_at, data: row.data }, ...scenarios]);
     setNewScenarioName(suggestScenarioName());
   };
 
@@ -1322,8 +1322,11 @@ export default function WealthGuardTool() {
     if (scn) { restore(scn.data); setShowScenariosPanel(false); }
   };
 
-  const deleteScenario = (id) => {
-    if (window.confirm('Delete this scenario?')) persistScenarios(scenarios.filter(s => s.id !== id));
+  const deleteScenario = async (id) => {
+    if (!window.confirm('Delete this scenario?')) return;
+    const { error } = await supabase.from('scenarios').delete().eq('id', id);
+    if (error) { window.alert('Could not delete scenario: ' + error.message); return; }
+    setScenarios(scenarios.filter(s => s.id !== id));
   };
 
   // Download a single scenario as a .json file (portable backup, immune to cache clearing).
@@ -1347,14 +1350,14 @@ export default function WealthGuardTool() {
   };
 
   // Import a scenario from a downloaded .json file (e.g. moving between computers).
-  // Adds it to the saved list AND loads it into the form.
+  // Adds it to the shared Supabase list AND loads it into the form.
   const importFileRef = useRef(null);
   const handleImportClick = () => { if (importFileRef.current) importFileRef.current.click(); };
   const handleImportFile = (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const parsed = JSON.parse(ev.target.result);
         // Accept either the wrapped export { format, scenario } or a bare scenario object.
@@ -1363,14 +1366,14 @@ export default function WealthGuardTool() {
           window.alert('That file doesn\'t look like a WealthGuard scenario export.');
           return;
         }
-        // Give it a fresh id so it never clashes with an existing saved scenario.
-        const imported = {
-          id: 'scn_' + Date.now(),
-          name: (scn.name || 'Imported scenario') + ' (imported)',
-          savedAt: new Date().toISOString(),
-          data: scn.data
-        };
-        persistScenarios([imported, ...scenarios]);
+        const name = (scn.name || 'Imported scenario') + ' (imported)';
+        const { data: userData } = await supabase.auth.getUser();
+        const { data: row, error } = await supabase.from('scenarios')
+          .insert({ name, data: scn.data, created_by: userData?.user?.email || null })
+          .select().single();
+        if (error) { window.alert('Could not import scenario: ' + error.message); return; }
+        const imported = { id: row.id, name: row.name, savedAt: row.created_at, data: row.data };
+        setScenarios([imported, ...scenarios]);
         restore(imported.data);
         setShowScenariosPanel(false);
         window.alert('Scenario imported and loaded: ' + imported.name);
