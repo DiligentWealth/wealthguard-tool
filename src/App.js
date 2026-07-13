@@ -845,6 +845,26 @@ export default function WealthGuardTool() {
   const [agedCareAnnualCost, setAgedCareAnnualCost] = useState(50000);
   const [agedCareDurationYears, setAgedCareDurationYears] = useState(0); // 0 = ongoing
 
+  // --- Gifting calculator (Residential Care Subsidy asset-test gifting allowance) ---
+  // All figures below are MSD-set thresholds that change periodically — kept editable
+  // rather than hardcoded so they can be updated without needing a code change.
+  const [giftingCalcEnabled, setGiftingCalcEnabled] = useState(false);
+  const [giftingYearsUntilCare, setGiftingYearsUntilCare] = useState(null); // null = auto from aged care timing
+  const [giftingAlreadyGifted, setGiftingAlreadyGifted] = useState(0);
+  const [giftingThresholdCategory, setGiftingThresholdCategory] = useState('couple_excl_home'); // see options below
+  const [giftingAssetsOverride, setGiftingAssetsOverride] = useState(null); // null = auto from current portfolio
+  // Near-period (last 5 years before application) allowance is a HOUSEHOLD total, not
+  // per-person — it only doubles if both partners apply for the subsidy at the same
+  // time, which is the less common case (usually one partner needs care, not both).
+  const [giftingNearLimitAnnual, setGiftingNearLimitAnnual] = useState(8500);
+  const [giftingBothApplyingTogether, setGiftingBothApplyingTogether] = useState(false);
+  const [giftingFarLimitHousehold, setGiftingFarLimitHousehold] = useState(27000);
+  const [giftingThresholds, setGiftingThresholds] = useState({
+    single: 300811,
+    coupleInclHome: 300811,
+    coupleExclHome: 164731
+  });
+
   // --- Bad first year stress test (deterministic sequence-of-returns demonstration) ---
   const [badFirstYearEnabled, setBadFirstYearEnabled] = useState(false);
   const [badFirstYearShockPercent, setBadFirstYearShockPercent] = useState(-20);
@@ -949,6 +969,48 @@ export default function WealthGuardTool() {
     contributionFrequency === 'fortnightly' ? contributionAmount * 26 :
     contributionFrequency === 'monthly'     ? contributionAmount * 12 :
     contributionAmount;
+
+  // --- Gifting calculator (Residential Care Subsidy asset-test) ---
+  // MSD allows limited gifting without it being treated as "deprivation of assets" and
+  // added back into the means test: a smaller annual amount in the 5 years immediately
+  // before an application (more scrutiny, closer to the event), and a larger annual
+  // amount for gifting done further in advance. This estimates the arithmetic ceiling
+  // only — MSD also applies a "purpose" test that a calculator can't judge (see the
+  // caveat shown alongside these figures in the UI).
+  const giftingResult = useMemo(() => {
+    const yearsUntilCare = giftingYearsUntilCare != null
+      ? Math.max(0, giftingYearsUntilCare)
+      : Math.max(0, yearsUntilRetirement + (agedCareEnabled ? agedCareStartYear : 0));
+    const nearYears = Math.min(5, yearsUntilCare);
+    const farYears = Math.max(0, yearsUntilCare - 5);
+    // Near-period allowance is a HOUSEHOLD total (e.g. $8,500/yr = $42,500 over 5 years).
+    // It only doubles if both partners apply for the subsidy at the same time — not
+    // simply because the household is a couple, which was an error in an earlier version.
+    const nearAnnualLimit = (isJoint && giftingBothApplyingTogether ? 2 : 1) * giftingNearLimitAnnual;
+    const farAnnualLimit = giftingFarLimitHousehold;
+    const nearTotal = nearYears * nearAnnualLimit;
+    const farTotal = farYears * farAnnualLimit;
+    const maxGifting = Math.max(0, nearTotal + farTotal - Math.max(0, giftingAlreadyGifted));
+
+    const assessableAssets = giftingAssetsOverride != null ? giftingAssetsOverride : totalPortfolio;
+    // "Single" and "couple, partner also in care" share the same threshold (per MSD rules,
+    // both are assessed at the higher combined-assets figure with no home/car choice).
+    const threshold = (giftingThresholdCategory === 'single' || giftingThresholdCategory === 'couple_in_care') ? giftingThresholds.single
+      : giftingThresholdCategory === 'couple_incl_home' ? giftingThresholds.coupleInclHome
+      : giftingThresholds.coupleExclHome;
+    const assetsAfterGifting = Math.max(0, assessableAssets - maxGifting);
+    const meetsThresholdAfterGifting = assetsAfterGifting <= threshold;
+    const meetsThresholdNow = assessableAssets <= threshold;
+    const gapToThreshold = Math.max(0, assessableAssets - threshold);
+
+    return {
+      yearsUntilCare, nearYears, farYears, nearAnnualLimit, farAnnualLimit, nearTotal, farTotal,
+      maxGifting, assessableAssets, threshold, assetsAfterGifting,
+      meetsThresholdAfterGifting, meetsThresholdNow, gapToThreshold
+    };
+  }, [giftingYearsUntilCare, yearsUntilRetirement, agedCareEnabled, agedCareStartYear, isJoint,
+      giftingNearLimitAnnual, giftingBothApplyingTogether, giftingFarLimitHousehold, giftingAlreadyGifted,
+      giftingAssetsOverride, totalPortfolio, giftingThresholdCategory, giftingThresholds]);
 
   // Annual KiwiSaver contributions (employee + employer matched, for client and partner)
   const annualKsClient = ksEnabled
@@ -2286,6 +2348,154 @@ export default function WealthGuardTool() {
                     {agedCareDurationYears > 0 && ` for ${agedCareDurationYears} year${agedCareDurationYears !== 1 ? 's' : ''}`}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Gifting calculator — Residential Care Subsidy asset-test gifting allowance */}
+            {agedCareEnabled && (
+              <div className="mt-6 pt-5 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h4 className="font-semibold text-slate-800">Gifting Calculator</h4>
+                    <p className="text-xs text-slate-500">Estimates how much could be gifted without it being treated as "deprivation of assets" against the Residential Care Subsidy means test.</p>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input type="checkbox" checked={giftingCalcEnabled}
+                      onChange={(e) => setGiftingCalcEnabled(e.target.checked)}/>
+                    Show
+                  </label>
+                </div>
+
+                {giftingCalcEnabled && (
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-2 bg-amber-50 border border-amber-300 text-amber-800 rounded-md p-3 text-xs">
+                      <AlertTriangle size={16} className="shrink-0 mt-0.5"/>
+                      <div>
+                        <strong>Illustration only, not gifting or legal advice.</strong> This shows the arithmetic ceiling under
+                        MSD's published gifting allowances. Work and Income also applies a "purpose" test — gifting timed close
+                        to a care need, or clearly intended to qualify for the subsidy, can still be treated as deprivation even
+                        within these limits. Two things this calculator doesn't model: assets sold for less than fair value are
+                        checked separately and can also be treated as gifting, and gifts made to a live-in carer (not a partner
+                        or dependent child) in recognition of qualifying care may be exempt on top of the usual allowance under
+                        separate rules. Verify current thresholds at workandincome.govt.nz before advising a client, and involve
+                        a lawyer for any actual gifting or trust strategy.
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Household type</label>
+                        <select value={giftingThresholdCategory} onChange={(e) => setGiftingThresholdCategory(e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm">
+                          <option value="single">Single, 65+</option>
+                          <option value="couple_in_care">Couple, partner also in long-term care</option>
+                          <option value="couple_excl_home">Couple, partner not in care — excluding home & car</option>
+                          <option value="couple_incl_home">Couple, partner not in care — including home & car</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Years until care/application</label>
+                        <input type="number" min="0" step="1"
+                          value={giftingYearsUntilCare ?? giftingResult.yearsUntilCare}
+                          onChange={(e) => setGiftingYearsUntilCare(e.target.value === '' ? null : parseInt(e.target.value) || 0)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Defaults to {yearsUntilRetirement} (to retirement) + {agedCareStartYear} (aged care start) = {yearsUntilRetirement + agedCareStartYear}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Already gifted to date</label>
+                        <MoneyInput value={giftingAlreadyGifted} onChange={setGiftingAlreadyGifted}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                      </div>
+                    </div>
+
+                    {isJoint && (
+                      <label className="flex items-center gap-2 cursor-pointer text-sm bg-slate-50 border border-slate-200 rounded-md px-3 py-2 w-fit">
+                        <input type="checkbox" checked={giftingBothApplyingTogether}
+                          onChange={(e) => setGiftingBothApplyingTogether(e.target.checked)}/>
+                        Both {clientName || 'client'} and {partnerName || 'partner'} applying for the subsidy at the same time
+                        <span className="text-xs text-slate-500">(doubles the near-period allowance — usually only one partner needs care)</span>
+                      </label>
+                    )}
+
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Assessable assets</label>
+                      <MoneyInput value={giftingAssetsOverride ?? totalPortfolio} onChange={setGiftingAssetsOverride}
+                        className="w-full max-w-xs px-3 py-2 border border-slate-300 rounded-md"/>
+                      <p className="text-xs text-slate-400 mt-1">Defaults to current portfolio total (${totalPortfolio.toLocaleString()}). RCS assessable assets may differ — e.g. if the home is excluded.</p>
+                    </div>
+
+                    {/* Editable regulatory figures */}
+                    <details className="bg-slate-50 border border-slate-200 rounded-md p-3">
+                      <summary className="text-sm font-medium text-slate-700 cursor-pointer">Regulatory figures (editable — check against Work and Income's current published rates)</summary>
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
+                        <div>
+                          <label className="text-xs text-slate-600 block mb-1">Near-period limit ($/household/yr, within 5 yrs)</label>
+                          <input type="number" step="500" value={giftingNearLimitAnnual}
+                            onChange={(e) => setGiftingNearLimitAnnual(parseFloat(e.target.value) || 0)}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600 block mb-1">Far-period limit ($/household/yr, beyond 5 yrs)</label>
+                          <input type="number" step="500" value={giftingFarLimitHousehold}
+                            onChange={(e) => setGiftingFarLimitHousehold(parseFloat(e.target.value) || 0)}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600 block mb-1">Threshold — single</label>
+                          <input type="number" step="1" value={giftingThresholds.single}
+                            onChange={(e) => setGiftingThresholds(p => ({ ...p, single: parseFloat(e.target.value) || 0 }))}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600 block mb-1">Threshold — couple, incl. home</label>
+                          <input type="number" step="1" value={giftingThresholds.coupleInclHome}
+                            onChange={(e) => setGiftingThresholds(p => ({ ...p, coupleInclHome: parseFloat(e.target.value) || 0 }))}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600 block mb-1">Threshold — couple, excl. home</label>
+                          <input type="number" step="1" value={giftingThresholds.coupleExclHome}
+                            onChange={(e) => setGiftingThresholds(p => ({ ...p, coupleExclHome: parseFloat(e.target.value) || 0 }))}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
+                        </div>
+                      </div>
+                    </details>
+
+                    {/* Results */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="rounded-lg p-4 border-l-4 bg-green-50 border-green-500">
+                        <div className="text-xs uppercase tracking-wider text-slate-500">Maximum giftable</div>
+                        <div className="text-3xl font-bold mt-1 text-green-700">${Math.round(giftingResult.maxGifting).toLocaleString()}</div>
+                        <div className="text-xs text-slate-600 mt-1">
+                          ${giftingResult.nearTotal.toLocaleString()} over the next {giftingResult.nearYears} yr{giftingResult.nearYears !== 1 ? 's' : ''} (${giftingResult.nearAnnualLimit.toLocaleString()}/yr)
+                          {giftingResult.farYears > 0 && <> + ${giftingResult.farTotal.toLocaleString()} over the following {giftingResult.farYears} yr{giftingResult.farYears !== 1 ? 's' : ''} (${giftingResult.farAnnualLimit.toLocaleString()}/yr)</>}
+                          {giftingAlreadyGifted > 0 && <> − ${Math.round(giftingAlreadyGifted).toLocaleString()} already gifted</>}
+                        </div>
+                      </div>
+                      <div className="rounded-lg p-4 border-l-4 bg-slate-50 border-slate-400">
+                        <div className="text-xs uppercase tracking-wider text-slate-500">Assets after gifting</div>
+                        <div className="text-3xl font-bold mt-1 text-slate-800">${Math.round(giftingResult.assetsAfterGifting).toLocaleString()}</div>
+                        <div className="text-xs text-slate-600 mt-1">vs threshold of ${giftingResult.threshold.toLocaleString()}</div>
+                      </div>
+                      <div className={`rounded-lg p-4 border-l-4 ${giftingResult.meetsThresholdAfterGifting ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500'}`}>
+                        <div className="text-xs uppercase tracking-wider text-slate-500">Meets asset test?</div>
+                        <div className={`text-lg font-bold mt-1 ${giftingResult.meetsThresholdAfterGifting ? 'text-green-700' : 'text-red-700'}`}>
+                          {giftingResult.meetsThresholdAfterGifting ? '✓ Yes, after gifting' : '✗ Not even after max gifting'}
+                        </div>
+                        {!giftingResult.meetsThresholdNow && !giftingResult.meetsThresholdAfterGifting && (
+                          <div className="text-xs text-red-600 mt-1">
+                            Still ${Math.round(Math.max(0, giftingResult.assetsAfterGifting - giftingResult.threshold)).toLocaleString()} over the threshold even at maximum allowable gifting.
+                          </div>
+                        )}
+                        {giftingResult.meetsThresholdNow && (
+                          <div className="text-xs text-green-600 mt-1">Already under the threshold — gifting isn't needed to qualify.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
