@@ -725,11 +725,13 @@ function computeScenarioSummary(data) {
     : 0;
   const annualKsTotal = annualKsClient + annualKsPartner;
 
+  const clientSuperIneligible = d.clientSuperIneligible ?? false;
+  const partnerSuperIneligible = d.partnerSuperIneligible ?? false;
   const getSuperForYear = (yearsIntoRetirement) => {
     const cAge = clientAge + yearsUntilRetirement + yearsIntoRetirement;
     const pAge = partnerAge + yearsUntilRetirement + yearsIntoRetirement;
-    const cEligible = cAge >= 65;
-    const pEligible = isJoint && pAge >= 65;
+    const cEligible = cAge >= 65 && !clientSuperIneligible;
+    const pEligible = isJoint && pAge >= 65 && !partnerSuperIneligible;
     const rates = useGrossSuper ? SUPER_RATES_GROSS : SUPER_RATES_NET_M;
     if (isJoint) {
       if (cEligible && pEligible) return rates.couple_both_each * 2 * 26;
@@ -808,6 +810,10 @@ export default function WealthGuardTool() {
   // --- Super settings ---
   const [useGrossSuper, setUseGrossSuper] = useState(false); // default Net (M)
   const [inflateSuper, setInflateSuper]   = useState(true);
+  // Marks someone as never receiving NZ Super regardless of age — e.g. residency
+  // requirements not met. Defaults to eligible (false = not ineligible = eligible).
+  const [clientSuperIneligible, setClientSuperIneligible] = useState(false);
+  const [partnerSuperIneligible, setPartnerSuperIneligible] = useState(false);
 
   // --- Current investments ---
   // Start empty so a fresh session has a $0 portfolio until the adviser enters figures.
@@ -1025,8 +1031,8 @@ export default function WealthGuardTool() {
   const getSuperForYear = useCallback((yearsIntoRetirement) => {
     const cAge = clientAge  + yearsUntilRetirement + yearsIntoRetirement;
     const pAge = partnerAge + yearsUntilRetirement + yearsIntoRetirement;
-    const cEligible = cAge >= 65;
-    const pEligible = isJoint && pAge >= 65;
+    const cEligible = cAge >= 65 && !clientSuperIneligible;
+    const pEligible = isJoint && pAge >= 65 && !partnerSuperIneligible;
     const rates = useGrossSuper ? SUPER_RATES_GROSS : SUPER_RATES_NET_M;
     if (isJoint) {
       if (cEligible && pEligible) return rates.couple_both_each * 2 * 26;
@@ -1035,7 +1041,8 @@ export default function WealthGuardTool() {
     }
     if (!cEligible) return 0;
     return rates[livingSituation] * 26;
-  }, [clientAge, partnerAge, yearsUntilRetirement, isJoint, useGrossSuper, livingSituation]);
+  }, [clientAge, partnerAge, yearsUntilRetirement, isJoint, useGrossSuper, livingSituation,
+      clientSuperIneligible, partnerSuperIneligible]);
 
   const superAtRetirement = getSuperForYear(0);
 
@@ -1047,18 +1054,19 @@ export default function WealthGuardTool() {
     const yearsToClient65  = Math.max(0, 65 - clientAge);
     const yearsToPartner65 = Math.max(0, 65 - partnerAge);
 
-    // Household super when client hits 65 — partner's age at that point determines rate
+    // Household super when client hits 65 — partner's age at that point determines rate.
+    // Zero out entirely if the relevant person is marked as never eligible.
     const partnerAgeAtClient65 = partnerAge + yearsToClient65;
-    const clientHouseholdTodayRate = isJoint
-      ? (partnerAgeAtClient65 >= 65 ? rates.couple_both_each * 2 * 26 : rates.couple_one * 26)
-      : rates[livingSituation] * 26;
+    const clientHouseholdTodayRate = clientSuperIneligible ? 0 : (isJoint
+      ? ((partnerAgeAtClient65 >= 65 && !partnerSuperIneligible) ? rates.couple_both_each * 2 * 26 : rates.couple_one * 26)
+      : rates[livingSituation] * 26);
     const clientSuperFV = clientHouseholdTodayRate * Math.pow(1 + INFLATION_RATE, yearsToClient65);
 
     // Household super when partner hits 65 — client's age at that point determines rate
     const clientAgeAtPartner65 = clientAge + yearsToPartner65;
-    const partnerHouseholdTodayRate = isJoint
-      ? (clientAgeAtPartner65 >= 65 ? rates.couple_both_each * 2 * 26 : rates.couple_one * 26)
-      : 0;
+    const partnerHouseholdTodayRate = partnerSuperIneligible ? 0 : (isJoint
+      ? ((clientAgeAtPartner65 >= 65 && !clientSuperIneligible) ? rates.couple_both_each * 2 * 26 : rates.couple_one * 26)
+      : 0);
     const partnerSuperFV = partnerHouseholdTodayRate * Math.pow(1 + INFLATION_RATE, yearsToPartner65);
 
     return {
@@ -1069,7 +1077,7 @@ export default function WealthGuardTool() {
       // True when the client and partner reach 65 in different years (i.e. different ages today)
       ageGap: isJoint && clientAge !== partnerAge
     };
-  }, [clientAge, partnerAge, isJoint, useGrossSuper, livingSituation]);
+  }, [clientAge, partnerAge, isJoint, useGrossSuper, livingSituation, clientSuperIneligible, partnerSuperIneligible]);
 
   // --- Simulation ---
   const simulationParams = useMemo(() => ({
@@ -1291,7 +1299,7 @@ export default function WealthGuardTool() {
   // Scenario management
   const snapshot = () => ({
     clientName, partnerName, clientAge, partnerAge, retirementAge,
-    livingSituation, useGrossSuper, inflateSuper,
+    livingSituation, useGrossSuper, inflateSuper, clientSuperIneligible, partnerSuperIneligible,
     currentInvestments, cash, termDeposits,
     projectionYears, annualIncome, contributionAmount, contributionFrequency,
     ksEnabled, clientSalary, partnerSalary,
@@ -1313,6 +1321,8 @@ export default function WealthGuardTool() {
     setLivingSituation(s.livingSituation ?? 'single_shared');
     setUseGrossSuper(s.useGrossSuper ?? false);
     setInflateSuper(s.inflateSuper ?? true);
+    setClientSuperIneligible(s.clientSuperIneligible ?? false);
+    setPartnerSuperIneligible(s.partnerSuperIneligible ?? false);
     setCurrentInvestments(s.currentInvestments ?? []);
     setCash(s.cash ?? 0);
     setTermDeposits(s.termDeposits ?? 0);
@@ -1927,6 +1937,12 @@ export default function WealthGuardTool() {
               <label className="block text-sm font-medium text-slate-700 mb-1">Super at Retirement (age {retirementAge})</label>
               <div className="w-full px-3 py-2 bg-slate-100 border rounded-md font-medium">
                 ${Math.round(superAtRetirement).toLocaleString()}/yr
+                {(clientSuperIneligible || (isJoint && partnerSuperIneligible)) && (
+                  <span className="text-xs text-amber-600 font-normal ml-2">
+                    ({[clientSuperIneligible && (clientName || 'Client'), isJoint && partnerSuperIneligible && (partnerName || 'Partner')]
+                      .filter(Boolean).join(' & ')} not eligible)
+                  </span>
+                )}
               </div>
             </div>
             {retirementAge !== 65 && !superAt65Details.ageGap && (
@@ -1977,6 +1993,21 @@ export default function WealthGuardTool() {
               <span className="text-slate-500 text-xs">
                 Rates effective 1 April 2026 • {useGrossSuper ? 'Gross' : 'Net (M tax code)'}
               </span>
+            </div>
+            <div className="flex flex-wrap gap-6 items-center text-sm mt-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={clientSuperIneligible}
+                  onChange={(e) => setClientSuperIneligible(e.target.checked)}/>
+                {clientName || 'Client'} not eligible for NZ Super
+              </label>
+              {isJoint && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={partnerSuperIneligible}
+                    onChange={(e) => setPartnerSuperIneligible(e.target.checked)}/>
+                  {partnerName || 'Partner'} not eligible for NZ Super
+                </label>
+              )}
+              <span className="text-slate-500 text-xs">e.g. residency requirements not met</span>
             </div>
           </div>
         </div>
@@ -3040,26 +3071,33 @@ export default function WealthGuardTool() {
             {/* Income & super in retirement */}
             <p>
               The target annual retirement income is <strong>${Math.round(annualIncome).toLocaleString()}</strong> in today's dollars, rising each year with inflation.
-              {superAtRetirement > 0 ? (
+              {(clientSuperIneligible && (!isJoint || partnerSuperIneligible)) ? (
+                <> {isJoint ? 'Neither partner is' : (clientName || 'The client') + ' is'} eligible for NZ Super, so the portfolio needs to cover the full income requirement throughout retirement.</>
+              ) : superAtRetirement > 0 ? (
                 <> NZ Super is expected to contribute around <strong>${Math.round(superAtRetirement).toLocaleString()}/yr</strong> from day one of retirement</>
               ) : (
                 <> NZ Super isn't available yet at the chosen retirement age — the portfolio must cover the full income requirement initially</>
               )}
-              {superAt65Details.ageGap ? (
-                <>
-                  . When <strong>{clientName || 'Client'}</strong> turns 65
-                  {superAt65Details.yearsToClient65 > 0 ? ` (in ${superAt65Details.yearsToClient65} year${superAt65Details.yearsToClient65 !== 1 ? 's' : ''})` : ''},
-                  household super will be around <strong>${Math.round(superAt65Details.clientSuperFV).toLocaleString()}/yr</strong>
-                  {superAt65Details.clientSuperFV < superAt65Details.partnerSuperFV ? (
-                    <>, lifting further to <strong>${Math.round(superAt65Details.partnerSuperFV).toLocaleString()}/yr</strong> when {partnerName || 'Partner'} also qualifies in {superAt65Details.yearsToPartner65} year{superAt65Details.yearsToPartner65 !== 1 ? 's' : ''}</>
-                  ) : (
-                    <></>
-                  )}.
-                </>
-              ) : retirementAge !== 65 && superAt65Details.yearsToClient65 > 0 ? (
-                <>. Once age 65 is reached (in {superAt65Details.yearsToClient65} year{superAt65Details.yearsToClient65 !== 1 ? 's' : ''}), super is expected to be around <strong>${Math.round(superAt65Details.clientSuperFV).toLocaleString()}/yr</strong>.</>
-              ) : (
-                <>.</>
+              {isJoint && (clientSuperIneligible !== partnerSuperIneligible) && (
+                <> ({clientSuperIneligible ? (clientName || 'Client') : (partnerName || 'Partner')} is not eligible for NZ Super; the figures above reflect {clientSuperIneligible ? (partnerName || 'Partner') : (clientName || 'Client')}'s entitlement only.)</>
+              )}
+              {!(clientSuperIneligible && (!isJoint || partnerSuperIneligible)) && (
+                superAt65Details.ageGap ? (
+                  <>
+                    . When <strong>{clientName || 'Client'}</strong> turns 65
+                    {superAt65Details.yearsToClient65 > 0 ? ` (in ${superAt65Details.yearsToClient65} year${superAt65Details.yearsToClient65 !== 1 ? 's' : ''})` : ''},
+                    household super will be around <strong>${Math.round(superAt65Details.clientSuperFV).toLocaleString()}/yr</strong>
+                    {superAt65Details.clientSuperFV < superAt65Details.partnerSuperFV ? (
+                      <>, lifting further to <strong>${Math.round(superAt65Details.partnerSuperFV).toLocaleString()}/yr</strong> when {partnerName || 'Partner'} also qualifies in {superAt65Details.yearsToPartner65} year{superAt65Details.yearsToPartner65 !== 1 ? 's' : ''}</>
+                    ) : (
+                      <></>
+                    )}.
+                  </>
+                ) : retirementAge !== 65 && superAt65Details.yearsToClient65 > 0 && !clientSuperIneligible ? (
+                  <>. Once age 65 is reached (in {superAt65Details.yearsToClient65} year{superAt65Details.yearsToClient65 !== 1 ? 's' : ''}), super is expected to be around <strong>${Math.round(superAt65Details.clientSuperFV).toLocaleString()}/yr</strong>.</>
+                ) : (
+                  <>.</>
+                )
               )}
             </p>
 
