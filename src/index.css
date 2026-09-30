@@ -16,3 +16,9 @@ h1,h2,h3,h4{font-family:Manrope,Inter,Arial,sans-serif;letter-spacing:-.025em}
 .wg-horizon strong{display:block;color:#293A61;font-family:Manrope,Arial,sans-serif;font-size:13px}
 @media(max-width:700px){.wg-horizons{grid-template-columns:1fr}.wg-horizon:last-child{grid-column:1/-1}.wg-horizon small{display:none}}
 @media print{.wg-quick-nav{display:none!important}}
+
+.wealthguard-app .wg-retirement-picture{background:#293A61;color:#fff}
+.wg-retirement-picture .text-slate-800,.wg-retirement-picture .text-slate-700,.wg-retirement-picture .text-slate-600,.wg-retirement-picture .text-slate-500{color:#fff}
+.wg-retirement-picture .text-red-700{color:#fde68a}
+.wg-retirement-picture .text-amber-600{color:#D5A65A}
+@media print{.wealthguard-app .wg-retirement-picture{background:#293A61!important;color:#fff!important}}

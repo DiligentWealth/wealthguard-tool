@@ -43,7 +43,9 @@ export function buildComparison(selections, finalAge){
   const base=selections[0].data;
   const joint=!!base.partnerName?.trim();
   const identity = s => stable([s.clientName?.trim().toLowerCase()||'',s.partnerName?.trim().toLowerCase()||'',s.clientAge??60,joint?s.partnerAge??60:null]);
-  if(selections.some(x=>identity(x.data)!==identity(base)||!!x.data.partnerName?.trim()!==joint)) throw new Error('Use scenarios for the same clients with the same current ages.');
+  const warnings=[];
+  if(selections.some(x=>identity(x.data)!==identity(base)||!!x.data.partnerName?.trim()!==joint)) warnings.push('Client details or current ages differ. Each scenario retains its own inputs; check that the selected scenarios are the ones you intend to compare.');
+  const agesDiffer=selections.some(x=>(x.data.clientAge??60)!==(base.clientAge??60)||(x.data.partnerAge??60)!==(base.partnerAge??60)||!!x.data.partnerName?.trim()!==joint);
   const youngestAge=joint?Math.min(base.clientAge??60,base.partnerAge??60):base.clientAge??60;
   const original=selections.map(x=>computeScenarioSummary(x.data));
   const endYears=finalAge==null || finalAge==='' ? Math.max(...original.map(x=>x.yearsUntilRetirement+x.projectionYears)) : Number(finalAge)-youngestAge;
@@ -58,7 +60,8 @@ export function buildComparison(selections, finalAge){
   });
   const inputs=selections.map(x=>comparisonInputs(x.data));
   const differences=groups.filter(([,keys])=>keys.some(k=>inputs.some(x=>stable(x[k])!==stable(inputs[0][k])))).map(([label])=>label);
+  if(agesDiffer) differences.unshift('Current ages / household structure');
   const relativeEvents=selections.some(x=>(x.data.retirementLumpSums||[]).some(e=>e.amount>0)||x.data.agedCareEnabled||x.data.incomeReductionEnabled||x.data.badFirstYearEnabled);
   const chart=Array.from({length:endYears+1},(_,year)=>Object.fromEntries([['year',year],...columns.map((x,i)=>['scenario'+i,x.summary.projectionData[year].Total])]));
-  return {columns,endYears,finalAge:youngestAge+endYears,youngestAge,differences,relativeEvents,chart};
+  return {columns,endYears,finalAge:youngestAge+endYears,youngestAge,differences,relativeEvents,chart,warnings,agesDiffer};
 }
