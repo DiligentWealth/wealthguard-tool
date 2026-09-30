@@ -4,7 +4,9 @@ import {
   PieChart, Pie, Cell, ComposedChart, Area, BarChart, Bar
 } from 'recharts';
 import { Download, Save, FolderOpen, Trash2, Plus, X, Sparkles, AlertTriangle, Dices, FileDown, FileUp, GitCompare } from 'lucide-react';
-import { supabase } from './supabaseClient';
+import { validateScenario } from './scenarioValidation';
+import { supabase, storageMode } from './supabaseClient';
+import { runSimulation, runMonteCarlo, normaliseAllocations, isPlanFunded, solveMaxIncome, makeKiwiSaverPools, annualKiwiSaver, retirementTimeline } from './engine';
 
 // =============================================================================
 // CONSTANTS
@@ -111,7 +113,7 @@ function MoneyInput({ value, onChange, className = '', placeholder = '', ...rest
   const handleBlur = () => {
     setFocused(false);
     const parsed = parseFloat(draft.replace(/[^0-9.-]/g, ''));
-    onChange(isNaN(parsed) ? 0 : parsed);
+    onChange(Number.isFinite(parsed) ? Math.max(0, parsed) : 0);
   };
 
   const handleChange = (e) => {
@@ -168,8 +170,21 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
   // renders empty axes with no data. Instead we clone the chart element and give it an
   // explicit pixel width/height, which Recharts chart components honour directly with no
   // measurement — so it draws fully even while hidden on screen.
+  const chartChildren = React.isValidElement(children) ? React.Children.toArray(children.props.children) : [];
+  const hasLegend = chartChildren.some(child => React.isValidElement(child) && child.type === Legend);
+  const printLegendItems = chartChildren.flatMap(child => {
+    if (!React.isValidElement(child)) return [];
+    if ([Line,Area,Bar].includes(child.type)) return [{name:child.props.name || child.props.dataKey, color:child.props.stroke || child.props.fill}];
+    if (child.type === Pie) return (child.props.data || []).map(d => ({name:d.name,color:d.color}));
+    return [];
+  });
   const printChart = React.isValidElement(children)
-    ? React.cloneElement(children, { width: printWidth, height: printHeight })
+    ? React.cloneElement(children, { width: printWidth, height: printHeight },
+        React.Children.map(children.props.children, child => {
+          if (!React.isValidElement(child)) return child;
+          if (child.type === Legend) return null;
+          return child;
+        }))
     : children;
   return (
     <>
@@ -182,6 +197,9 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
       {/* Print: fixed-size chart (no ResponsiveContainer), hidden on screen */}
       <div className="hidden print:block">
         {printChart}
+        {hasLegend && <div style={{width:printWidth,display:'flex',flexWrap:'wrap',justifyContent:'center',gap:'6px 12px',fontSize:11,marginTop:12,marginBottom:12}}>
+          {printLegendItems.map((item,index) => <span key={index} style={{color:item.color}}>{item.name}</span>)}
+        </div>}
       </div>
     </>
   );
@@ -191,551 +209,6 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
 // SIMULATION
 // =============================================================================
 
-function runSimulation(params) {
-  const {
-    totalPortfolio, allocations: rawAllocations, accumulationAllocations: rawAccumulationAllocations, returns,
-    accumulationReturns,
-    yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
-    // Per-person retirement timing: each person's KiwiSaver stops at THEIR OWN
-    // retirement year, not the household's (later-of-two) year. Defaulting both to
-    // yearsUntilRetirement keeps old callers (single-date scenarios) unaffected.
-    yearsUntilClientRetirement = yearsUntilRetirement, yearsUntilPartnerRetirement = yearsUntilRetirement,
-    annualKsClient = 0, annualKsPartner = 0,
-    incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
-    agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
-    badFirstYearEnabled = false, badFirstYearShockPercent = -20,
-    accumulationLumpSums, retirementLumpSums,
-    getSuperForYear, inflateSuper, cashMonths
-  } = params;
-
-  const data = [];
-
-  // Normalise allocations so the FULL portfolio is always deployed, treating the
-  // entered percentages as relative weights. This prevents the headline figures
-  // from silently running on a wrong base when the inputs don't sum to exactly 100%.
-  // (A visible warning is shown in the UI when the entered total isn't 100%.)
-  const normalise = (obj) => {
-    const sum = Object.values(obj).reduce((a, b) => a + (b || 0), 0);
-    if (sum <= 0) return obj;
-    const out = {};
-    for (const k of Object.keys(obj)) out[k] = (obj[k] || 0) * 100 / sum;
-    return out;
-  };
-  const allocations = normalise(rawAllocations);
-  const accumulationAllocations = normalise(rawAccumulationAllocations);
-
-  // Initial bucket allocation — use accumulation if pre-retirement, else retirement
-  let cash, termDep, income, balanced, growth;
-  if (yearsUntilRetirement > 0) {
-    cash     = totalPortfolio * (accumulationAllocations.cashSavings / 100);
-    balanced = totalPortfolio * (accumulationAllocations.balancedPortfolio / 100);
-    growth   = totalPortfolio * (accumulationAllocations.growthPortfolio / 100);
-    termDep  = 0;
-    income   = 0;
-  } else {
-    cash     = totalPortfolio * (allocations.cashSavings / 100);
-    termDep  = totalPortfolio * (allocations.termDeposit / 100);
-    income   = totalPortfolio * (allocations.incomePortfolio / 100);
-    balanced = totalPortfolio * (allocations.balancedPortfolio / 100);
-    growth   = totalPortfolio * (allocations.growthPortfolio / 100);
-  }
-
-  const totalDuration = yearsUntilRetirement + projectionYears;
-  let cumulativeDrawdown = 0;
-  // Income bucket target — set at retirement start from the initial retirement allocation
-  // This is the level we refill Income back up to from Balanced/Growth annually
-  let incomeTarget = (yearsUntilRetirement === 0)
-    ? totalPortfolio * (allocations.incomePortfolio / 100)
-    : 0;
-
-  // Pull `amount` proportionally from Balanced and Growth, return actual amount drawn
-  const takeFromBalancedGrowth = (amount) => {
-    if (amount <= 0) return 0;
-    const combined = balanced + growth;
-    if (combined <= 0) return 0;
-    const fromB = Math.min(balanced, amount * (balanced / combined));
-    const fromG = Math.min(growth,   amount * (growth   / combined));
-    balanced -= fromB;
-    growth   -= fromG;
-    return fromB + fromG;
-  };
-
-  // Retirement drawdown cascade: Cash → Income → Balanced+Growth (prop) → TD (emergency only)
-  // Cash holds day-to-day spending. Income tops up Cash (quarterly in practice).
-  // Balanced+Growth top up Income. TD is a safety net — only used when everything else is depleted.
-  const retireCascade = (need) => {
-    let remaining = need;
-    if (remaining <= 0) return 0;
-    const fromCash = Math.min(cash, remaining);
-    cash -= fromCash; remaining -= fromCash;
-    if (remaining > 0) {
-      const fromIncome = Math.min(income, remaining);
-      income -= fromIncome; remaining -= fromIncome;
-    }
-    if (remaining > 0) {
-      const drawn = takeFromBalancedGrowth(remaining);
-      remaining -= drawn;
-    }
-    if (remaining > 0) {
-      const fromTD = Math.min(termDep, remaining);
-      termDep -= fromTD; remaining -= fromTD;
-    }
-    return need - remaining;
-  };
-
-  // Down-market cascade: Cash → TD (protect growth) → Income → B+G (last resort).
-  // Used for the "bad first year" stress test — funds the first year of retirement
-  // from the safe buckets so growth assets aren't sold right after a market drop.
-  const retireCascadeDown = (need) => {
-    let remaining = need;
-    if (remaining <= 0) return 0;
-    const fromCash = Math.min(cash, remaining);
-    cash -= fromCash; remaining -= fromCash;
-    if (remaining > 0) {
-      const fromTD = Math.min(termDep, remaining);
-      termDep -= fromTD; remaining -= fromTD;
-    }
-    if (remaining > 0) {
-      const fromIncome = Math.min(income, remaining);
-      income -= fromIncome; remaining -= fromIncome;
-    }
-    if (remaining > 0) {
-      const drawn = takeFromBalancedGrowth(remaining);
-      remaining -= drawn;
-    }
-    return need - remaining;
-  };
-
-  // Refill Cash to target from Income first, then Balanced/Growth (NOT from TD)
-  const refillCash = (target) => {
-    if (cash >= target) return;
-    let need = target - cash;
-    const fromIncome = Math.min(income, need);
-    income -= fromIncome; cash += fromIncome; need -= fromIncome;
-    if (need > 0) {
-      const drawn = takeFromBalancedGrowth(need);
-      cash += drawn;
-    }
-  };
-
-  // Refill Income to target from Balanced/Growth (NOT from TD)
-  const refillIncome = (target) => {
-    if (income >= target) return;
-    const need = target - income;
-    const drawn = takeFromBalancedGrowth(need);
-    income += drawn;
-  };
-
-  // Accumulation-phase withdrawal cascade: Cash → Balanced+Growth (prop)
-  const accumWithdraw = (need) => {
-    let remaining = need;
-    const fromCash = Math.min(cash, remaining);
-    cash -= fromCash; remaining -= fromCash;
-    if (remaining > 0) remaining -= takeFromBalancedGrowth(remaining);
-    return need - remaining;
-  };
-
-  for (let year = 0; year <= totalDuration; year++) {
-    // At retirement: redistribute buckets into retirement allocation
-    if (year === yearsUntilRetirement && yearsUntilRetirement > 0) {
-      const total = cash + termDep + income + balanced + growth;
-      cash     = total * (allocations.cashSavings / 100);
-      termDep  = total * (allocations.termDeposit / 100);
-      income   = total * (allocations.incomePortfolio / 100);
-      balanced = total * (allocations.balancedPortfolio / 100);
-      growth   = total * (allocations.growthPortfolio / 100);
-      incomeTarget = income;
-    }
-
-    // Record this year's opening state
-    const entry = {
-      year,
-      'Cash Savings':          Math.round(cash),
-      'Capital Preservation':  Math.round(termDep),
-      'Income Generator':      Math.round(income),
-      'Steady Growth':         Math.round(balanced),
-      'Strategic Long Term Growth':      Math.round(growth),
-      Total:                   Math.round(cash + termDep + income + balanced + growth),
-      drawdownRequired: 0,
-      drawdownActual:   0,
-      cumulativeDrawdown: Math.round(cumulativeDrawdown),
-      superIncome: 0
-    };
-
-    if (year >= totalDuration) { data.push(entry); break; }
-
-    const isRetired = year >= yearsUntilRetirement;
-    const yearsIntoRetirement = isRetired ? year - yearsUntilRetirement : -1;
-    // The "bad first year" stress test shocks growth returns and protects growth via
-    // the down-year cascade only in the very first year of retirement.
-    const isShockYear = badFirstYearEnabled && isRetired && yearsIntoRetirement === 0;
-
-    // Contributions & lump sums during accumulation
-    if (!isRetired) {
-      // Regular contribution (stops at retirement)
-      if (annualContribution > 0) {
-        cash     += annualContribution * (accumulationAllocations.cashSavings / 100);
-        balanced += annualContribution * (accumulationAllocations.balancedPortfolio / 100);
-        growth   += annualContribution * (accumulationAllocations.growthPortfolio / 100);
-      }
-      // KiwiSaver contributions — each person's own contribution stops at THEIR OWN
-      // retirement year (no salary once they've personally retired), not the
-      // household's later-of-two year.
-      const ksThisYear = (year < yearsUntilClientRetirement ? annualKsClient : 0)
-        + (year < yearsUntilPartnerRetirement ? annualKsPartner : 0);
-      if (ksThisYear > 0) {
-        cash     += ksThisYear * (accumulationAllocations.cashSavings / 100);
-        balanced += ksThisYear * (accumulationAllocations.balancedPortfolio / 100);
-        growth   += ksThisYear * (accumulationAllocations.growthPortfolio / 100);
-      }
-      for (const ls of accumulationLumpSums) {
-        if (ls.year === year && ls.amount) {
-          const amt = ls.type === 'withdrawal' ? -ls.amount : ls.amount;
-          if (amt >= 0) {
-            cash     += amt * (accumulationAllocations.cashSavings / 100);
-            balanced += amt * (accumulationAllocations.balancedPortfolio / 100);
-            growth   += amt * (accumulationAllocations.growthPortfolio / 100);
-          } else {
-            accumWithdraw(-amt);
-          }
-        }
-      }
-    } else {
-      const yearsInto = year - yearsUntilRetirement;
-      for (const ls of retirementLumpSums) {
-        if (ls.yearFromRetirement === yearsInto && ls.amount) {
-          if (ls.type === 'withdrawal') {
-            retireCascade(ls.amount);
-          } else {
-            // Deposit split by retirement allocation
-            cash     += ls.amount * (allocations.cashSavings / 100);
-            termDep  += ls.amount * (allocations.termDeposit / 100);
-            income   += ls.amount * (allocations.incomePortfolio / 100);
-            balanced += ls.amount * (allocations.balancedPortfolio / 100);
-            growth   += ls.amount * (allocations.growthPortfolio / 100);
-          }
-        }
-      }
-    }
-
-    // Apply returns — accumulation phase uses its own return assumptions,
-    // retirement phase uses the retirement-strategy returns. In the "bad first year"
-    // shock year, growth buckets get the shock return instead of their expected one;
-    // Cash, Capital Preservation and Income Generator are unaffected (matching the
-    // Monte Carlo engine's treatment of a down year).
-    const accRet = accumulationReturns || {
-      cashSavings: returns.cashSavings, balancedPortfolio: returns.steadyGrowth, growthPortfolio: returns.strategicGrowth
-    };
-    const balancedReturnPct = isShockYear ? badFirstYearShockPercent : (isRetired ? returns.steadyGrowth : accRet.balancedPortfolio);
-    const growthReturnPct   = isShockYear ? badFirstYearShockPercent : (isRetired ? returns.strategicGrowth : accRet.growthPortfolio);
-    cash     *= (1 + (isRetired ? returns.cashSavings : accRet.cashSavings) / 100);
-    termDep  *= (1 + returns.capitalPreservation / 100);
-    income   *= (1 + returns.incomeGenerator / 100);
-    balanced *= (1 + balancedReturnPct / 100);
-    growth   *= (1 + growthReturnPct / 100);
-
-    // Income drawdown
-    if (isRetired) {
-      const yearsInto = yearsIntoRetirement;
-      const baseSuper = getSuperForYear(yearsInto);
-      const yearSuper = inflateSuper ? baseSuper * Math.pow(1 + INFLATION_RATE, yearsInto) : baseSuper;
-
-      // Apply step-down reduction to required income if enabled (e.g. 20% less after year 15)
-      const reductionFactor = (incomeReductionEnabled && yearsInto >= incomeReductionAfterYears)
-        ? (1 - incomeReductionPercent / 100)
-        : 1;
-      const effectiveIncome = annualIncome * reductionFactor;
-      const inflatedIncome = effectiveIncome * Math.pow(1 + INFLATION_RATE, yearsInto);
-
-      // Aged care: an additional cost from a chosen year of retirement, inflated the
-      // same way as income, for a set duration (0 = ongoing for the rest of the plan).
-      const agedCareActive = agedCareEnabled && yearsInto >= agedCareStartYear &&
-        (agedCareDurationYears <= 0 || yearsInto < agedCareStartYear + agedCareDurationYears);
-      const inflatedAgedCare = agedCareActive
-        ? agedCareAnnualCost * Math.pow(1 + INFLATION_RATE, yearsInto)
-        : 0;
-
-      const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper);
-
-      // 1. Draw expenses through the cascade — protective (down-year) cascade in the
-      // shock year, normal cascade otherwise (Cash → Income → B+G → TD).
-      const actual = isShockYear ? retireCascadeDown(drawdownNeeded) : retireCascade(drawdownNeeded);
-
-      // 2. Replenish Cash to target from Income, then B+G (not TD) — skipped in the
-      // shock year so growth isn't touched to top up cash right after a market drop.
-      if (!isShockYear) {
-        const cashTarget = inflatedIncome * (cashMonths / 12);
-        refillCash(cashTarget);
-        // 3. Replenish Income to target from B+G (not TD)
-        refillIncome(incomeTarget);
-      }
-
-      cumulativeDrawdown += actual;
-      entry.drawdownRequired = Math.round(drawdownNeeded);
-      entry.drawdownActual   = Math.round(actual);
-      entry.superIncome      = Math.round(yearSuper);
-      entry.agedCareCost     = Math.round(inflatedAgedCare);
-    }
-
-    data.push(entry);
-  }
-
-  return data;
-}
-
-// =============================================================================
-// MONTE CARLO ENGINE
-// =============================================================================
-// Models the WealthGuard strategy faithfully under random returns:
-//  - Cash & Capital Preservation are contractual (fixed return, no volatility).
-//  - Income Generator carries only a small wobble (built for stable income).
-//  - Steady Growth & Strategic Growth carry the real volatility and move TOGETHER
-//    via a shared annual market shock (so a bad year hits both at once).
-//  - In a DOWN year for growth, income is funded from Cash then Capital Preservation,
-//    leaving growth untouched to recover (this is the whole point of bucketing).
-//    Growth is only sold as a genuine last resort when Cash + Capital Preservation
-//    are exhausted. In a normal year, the usual cascade + refills run.
-
-// Standard normal via Box-Muller
-function randn() {
-  let u = 0, v = 0;
-  while (u === 0) u = Math.random();
-  while (v === 0) v = Math.random();
-  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-}
-
-function runMonteCarloPath(params) {
-  const {
-    totalPortfolio, allocations: rawAllocations, accumulationAllocations: rawAccumulationAllocations, returns, volatilities,
-    accumulationReturns, mcAccumulationEnabled = false,
-    yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
-    yearsUntilClientRetirement = yearsUntilRetirement, yearsUntilPartnerRetirement = yearsUntilRetirement,
-    annualKsClient = 0, annualKsPartner = 0,
-    incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
-    agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
-    accumulationLumpSums = [], retirementLumpSums = [],
-    getSuperForYear, inflateSuper, cashMonths, downYearThreshold = 0
-  } = params;
-
-  // Normalise to 100% (same rationale as the deterministic engine).
-  const normalise = (obj) => {
-    const sum = Object.values(obj).reduce((a, b) => a + (b || 0), 0);
-    if (sum <= 0) return obj;
-    const out = {};
-    for (const k of Object.keys(obj)) out[k] = (obj[k] || 0) * 100 / sum;
-    return out;
-  };
-  const allocations = normalise(rawAllocations);
-  const accumulationAllocations = normalise(rawAccumulationAllocations);
-
-  let cash, termDep, income, balanced, growth;
-  if (yearsUntilRetirement > 0) {
-    cash     = totalPortfolio * (accumulationAllocations.cashSavings / 100);
-    balanced = totalPortfolio * (accumulationAllocations.balancedPortfolio / 100);
-    growth   = totalPortfolio * (accumulationAllocations.growthPortfolio / 100);
-    termDep  = 0; income = 0;
-  } else {
-    cash     = totalPortfolio * (allocations.cashSavings / 100);
-    termDep  = totalPortfolio * (allocations.termDeposit / 100);
-    income   = totalPortfolio * (allocations.incomePortfolio / 100);
-    balanced = totalPortfolio * (allocations.balancedPortfolio / 100);
-    growth   = totalPortfolio * (allocations.growthPortfolio / 100);
-  }
-
-  const totalDuration = yearsUntilRetirement + projectionYears;
-  let incomeTarget = (yearsUntilRetirement === 0) ? totalPortfolio * (allocations.incomePortfolio / 100) : 0;
-  const totals = [];
-  let depletionYear = null;
-
-  const takeFromBalancedGrowth = (amount) => {
-    if (amount <= 0) return 0;
-    const combined = balanced + growth;
-    if (combined <= 0) return 0;
-    const fromB = Math.min(balanced, amount * (balanced / combined));
-    const fromG = Math.min(growth,   amount * (growth   / combined));
-    balanced -= fromB; growth -= fromG;
-    return fromB + fromG;
-  };
-  const takeFromTD = (amount) => { const f = Math.min(termDep, Math.max(0, amount)); termDep -= f; return f; };
-
-  // Normal-market cascade: Cash → Income → B+G → TD
-  const retireCascadeNormal = (need) => {
-    let r = need;
-    const fc = Math.min(cash, r); cash -= fc; r -= fc;
-    if (r > 0) { const fi = Math.min(income, r); income -= fi; r -= fi; }
-    if (r > 0) r -= takeFromBalancedGrowth(r);
-    if (r > 0) r -= takeFromTD(r);
-    return need - r;
-  };
-  // Down-market cascade: Cash → TD (protect growth) → Income → B+G (last resort)
-  const retireCascadeDown = (need) => {
-    let r = need;
-    const fc = Math.min(cash, r); cash -= fc; r -= fc;
-    if (r > 0) r -= takeFromTD(r);
-    if (r > 0) { const fi = Math.min(income, r); income -= fi; r -= fi; }
-    if (r > 0) r -= takeFromBalancedGrowth(r);
-    return need - r;
-  };
-  const refillCash = (target) => {
-    if (cash >= target) return;
-    let need = target - cash;
-    const fi = Math.min(income, need); income -= fi; cash += fi; need -= fi;
-    if (need > 0) cash += takeFromBalancedGrowth(need);
-  };
-  const refillIncome = (target) => {
-    if (income >= target) return;
-    income += takeFromBalancedGrowth(target - income);
-  };
-  const accumWithdraw = (need) => {
-    let r = need;
-    const fc = Math.min(cash, r); cash -= fc; r -= fc;
-    if (r > 0) r -= takeFromBalancedGrowth(r);
-  };
-
-  for (let year = 0; year <= totalDuration; year++) {
-    if (year === yearsUntilRetirement && yearsUntilRetirement > 0) {
-      const total = cash + termDep + income + balanced + growth;
-      cash = total * (allocations.cashSavings / 100);
-      termDep = total * (allocations.termDeposit / 100);
-      income = total * (allocations.incomePortfolio / 100);
-      balanced = total * (allocations.balancedPortfolio / 100);
-      growth = total * (allocations.growthPortfolio / 100);
-      incomeTarget = income;
-    }
-
-    const totalNow = cash + termDep + income + balanced + growth;
-    totals.push(Math.round(totalNow));
-    if (totalNow <= 1 && year >= yearsUntilRetirement && depletionYear === null) depletionYear = year;
-    if (year >= totalDuration) break;
-
-    const isRetired = year >= yearsUntilRetirement;
-
-    if (!isRetired) {
-      if (annualContribution > 0) {
-        cash += annualContribution * (accumulationAllocations.cashSavings / 100);
-        balanced += annualContribution * (accumulationAllocations.balancedPortfolio / 100);
-        growth += annualContribution * (accumulationAllocations.growthPortfolio / 100);
-      }
-      const ksThisYear = (year < yearsUntilClientRetirement ? annualKsClient : 0)
-        + (year < yearsUntilPartnerRetirement ? annualKsPartner : 0);
-      if (ksThisYear > 0) {
-        cash += ksThisYear * (accumulationAllocations.cashSavings / 100);
-        balanced += ksThisYear * (accumulationAllocations.balancedPortfolio / 100);
-        growth += ksThisYear * (accumulationAllocations.growthPortfolio / 100);
-      }
-      for (const ls of accumulationLumpSums) {
-        if (ls.year === year && ls.amount) {
-          const amt = ls.type === 'withdrawal' ? -ls.amount : ls.amount;
-          if (amt >= 0) {
-            cash += amt * (accumulationAllocations.cashSavings / 100);
-            balanced += amt * (accumulationAllocations.balancedPortfolio / 100);
-            growth += amt * (accumulationAllocations.growthPortfolio / 100);
-          } else accumWithdraw(-amt);
-        }
-      }
-    } else {
-      const yearsInto = year - yearsUntilRetirement;
-      for (const ls of retirementLumpSums) {
-        if (ls.yearFromRetirement === yearsInto && ls.amount) {
-          if (ls.type === 'withdrawal') retireCascadeNormal(ls.amount);
-          else {
-            cash += ls.amount * (allocations.cashSavings / 100);
-            termDep += ls.amount * (allocations.termDeposit / 100);
-            income += ls.amount * (allocations.incomePortfolio / 100);
-            balanced += ls.amount * (allocations.balancedPortfolio / 100);
-            growth += ls.amount * (allocations.growthPortfolio / 100);
-          }
-        }
-      }
-    }
-
-    // Shared market shock z drives the growth buckets together (correlation).
-    const accRet = accumulationReturns || {
-      cashSavings: returns.cashSavings, balancedPortfolio: returns.steadyGrowth, growthPortfolio: returns.strategicGrowth
-    };
-    const z = randn();
-    let cashRet, steadyRet, strategicRet, incomeRet;
-    if (isRetired) {
-      cashRet      = returns.cashSavings / 100;
-      steadyRet    = returns.steadyGrowth / 100    + (volatilities.steadyGrowth / 100) * z;
-      strategicRet = returns.strategicGrowth / 100 + (volatilities.strategicGrowth / 100) * z;
-      incomeRet    = returns.incomeGenerator / 100 + (volatilities.incomeGenerator / 100) * (0.5 * z + 0.5 * randn());
-    } else {
-      // Accumulation phase: own return means; volatility applied only if enabled.
-      const v = mcAccumulationEnabled ? 1 : 0;
-      cashRet      = accRet.cashSavings / 100;
-      steadyRet    = accRet.balancedPortfolio / 100 + v * (volatilities.steadyGrowth / 100) * z;
-      strategicRet = accRet.growthPortfolio / 100   + v * (volatilities.strategicGrowth / 100) * z;
-      incomeRet    = 0; // no income bucket during accumulation
-    }
-
-    cash     *= (1 + cashRet);
-    termDep  *= (1 + returns.capitalPreservation / 100);
-    income   *= (1 + incomeRet);
-    balanced *= (1 + steadyRet);
-    growth   *= (1 + strategicRet);
-
-    // Down-year rule only applies in retirement (that's the only phase that draws income).
-    const growthWasDown = isRetired && Math.min(steadyRet, strategicRet) < (downYearThreshold / 100);
-
-    if (isRetired) {
-      const yearsInto = year - yearsUntilRetirement;
-      const baseSuper = getSuperForYear(yearsInto);
-      const yearSuper = inflateSuper ? baseSuper * Math.pow(1 + INFLATION_RATE, yearsInto) : baseSuper;
-      const reductionFactor = (incomeReductionEnabled && yearsInto >= incomeReductionAfterYears)
-        ? (1 - incomeReductionPercent / 100) : 1;
-      const inflatedIncome = annualIncome * reductionFactor * Math.pow(1 + INFLATION_RATE, yearsInto);
-
-      const agedCareActive = agedCareEnabled && yearsInto >= agedCareStartYear &&
-        (agedCareDurationYears <= 0 || yearsInto < agedCareStartYear + agedCareDurationYears);
-      const inflatedAgedCare = agedCareActive
-        ? agedCareAnnualCost * Math.pow(1 + INFLATION_RATE, yearsInto)
-        : 0;
-
-      const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper);
-
-      if (growthWasDown) {
-        retireCascadeDown(drawdownNeeded);
-      } else {
-        retireCascadeNormal(drawdownNeeded);
-        refillCash(inflatedIncome * (cashMonths / 12));
-        refillIncome(incomeTarget);
-      }
-    }
-  }
-
-  const survived = (cash + termDep + income + balanced + growth) > 1;
-  return { totals, survived, depletionYear };
-}
-
-function runMonteCarlo(params, numSims) {
-  const paths = [];
-  let successes = 0;
-  const depletionYears = [];
-  const len = params.yearsUntilRetirement + params.projectionYears + 1;
-  for (let s = 0; s < numSims; s++) {
-    const { totals, survived, depletionYear } = runMonteCarloPath(params);
-    paths.push(totals);
-    if (survived) successes++;
-    else if (depletionYear !== null) depletionYears.push(depletionYear);
-  }
-  const bands = [];
-  for (let y = 0; y < len; y++) {
-    const col = paths.map(p => p[y] ?? 0).sort((a, b) => a - b);
-    const pct = (q) => col[Math.min(col.length - 1, Math.max(0, Math.floor(q * col.length)))];
-    bands.push({
-      year: y,
-      p10: pct(0.10), p25: pct(0.25), p50: pct(0.50), p75: pct(0.75), p90: pct(0.90),
-      // stacked band widths for area rendering
-      base: pct(0.10),
-      band10_25: pct(0.25) - pct(0.10),
-      band25_75: pct(0.75) - pct(0.25),
-      band75_90: pct(0.90) - pct(0.75)
-    });
-  }
-  return { successRate: successes / numSims, bands, depletionYears, numSims };
-}
-
 // =============================================================================
 // SCENARIO COMPARISON — standalone computation from a saved snapshot
 // =============================================================================
@@ -743,7 +216,7 @@ function runMonteCarlo(params, numSims) {
 // contributions, simulation params) directly from a saved scenario's data blob, so
 // two scenarios can be compared side-by-side WITHOUT loading either into the live
 // form (which would overwrite whatever the adviser is currently working on).
-function computeScenarioSummary(data) {
+export function computeScenarioSummary(data) {
   const d = data || {};
   const clientAge = d.clientAge ?? 60;
   const partnerAge = d.partnerAge ?? 60;
@@ -758,15 +231,14 @@ function computeScenarioSummary(data) {
   // in the fallback case, so old scenarios reproduce their original numbers exactly.
   const partnerRetirementAge = d.partnerRetirementAge ?? (partnerAge + yearsUntilClientRetirement);
   const yearsUntilPartnerRetirement = isJoint ? Math.max(0, partnerRetirementAge - partnerAge) : 0;
-  const yearsUntilRetirement = isJoint
-    ? Math.max(yearsUntilClientRetirement, yearsUntilPartnerRetirement)
-    : yearsUntilClientRetirement;
+  const {first: yearsUntilRetirement, full: yearsUntilFullRetirement} = retirementTimeline(
+    yearsUntilClientRetirement, yearsUntilPartnerRetirement, isJoint);
   const livingSituation = d.livingSituation ?? 'single_shared';
   const useGrossSuper = d.useGrossSuper ?? false;
   const inflateSuper = d.inflateSuper ?? true;
 
   const currentInvestments = d.currentInvestments ?? [];
-  const totalInvestments = currentInvestments.reduce((s, i) => s + (i.amount || 0), 0);
+  const totalInvestments = currentInvestments.filter(i => isJoint || i.id !== 2).reduce((s, i) => s + (i.amount || 0), 0);
   const totalPortfolio = (d.cash || 0) + (d.termDeposits || 0) + totalInvestments;
 
   const contributionAmount = d.contributionAmount || 0;
@@ -778,10 +250,10 @@ function computeScenarioSummary(data) {
 
   const ksEnabled = d.ksEnabled ?? false;
   const annualKsClient = ksEnabled
-    ? (d.clientSalary || 0) * ((d.clientKsRate || 0) / 100) + (d.clientSalary || 0) * ((d.clientKsEmployer || 0) / 100)
+    ? annualKiwiSaver(d.clientSalary || 0, d.clientKsRate || 0, d.clientKsEmployer || 0, d.clientEsctRate)
     : 0;
   const annualKsPartner = ksEnabled && isJoint
-    ? (d.partnerSalary || 0) * ((d.partnerKsRate || 0) / 100) + (d.partnerSalary || 0) * ((d.partnerKsEmployer || 0) / 100)
+    ? annualKiwiSaver(d.partnerSalary || 0, d.partnerKsRate || 0, d.partnerKsEmployer || 0, d.partnerEsctRate)
     : 0;
 
   const clientSuperIneligible = d.clientSuperIneligible ?? false;
@@ -811,11 +283,15 @@ function computeScenarioSummary(data) {
   const recSettings = d.recSettings ?? { cashMonths: 4.5 };
   const projectionYears = d.projectionYears ?? 30;
   const annualIncome = d.annualIncome ?? 0;
+  const clientWorkingIncome = d.clientWorkingIncome ?? 0;
+  const partnerWorkingIncome = isJoint ? (d.partnerWorkingIncome ?? 0) : 0;
   const legacyTarget = Math.max(0, d.legacyTarget || 0);
 
   const simParams = {
+    lockedKiwiSaver: makeKiwiSaverPools(currentInvestments, clientAge, partnerAge, isJoint, yearsUntilClientRetirement, yearsUntilPartnerRetirement, annualKsClient, annualKsPartner),
     totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns,
     yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+    clientWorkingIncome, partnerWorkingIncome: isJoint ? partnerWorkingIncome : 0,
     projectionYears, annualContribution, annualKsClient, annualKsPartner,
     incomeReductionEnabled: d.incomeReductionEnabled ?? false,
     incomeReductionAfterYears: d.incomeReductionAfterYears ?? 15,
@@ -833,21 +309,15 @@ function computeScenarioSummary(data) {
 
   const projectionData = runSimulation({ ...simParams, annualIncome });
   const portfolioAtRetirement = (projectionData.find(p => p.year === yearsUntilRetirement) || {}).Total ?? totalPortfolio;
-  const firstYearDrawdown = Math.max(0, annualIncome - superAtRetirement);
+  const firstYearWorkingIncome = (yearsUntilRetirement < yearsUntilClientRetirement ? clientWorkingIncome : 0) + (yearsUntilRetirement < yearsUntilPartnerRetirement ? partnerWorkingIncome : 0);
+  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - (inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement)));
 
-  // Max sustainable income (same binary search as the live app, including legacy target)
-  let low = 0, high = Math.max(annualIncome * 5, 500000, totalPortfolio);
-  for (let i = 0; i < 60; i++) {
-    const mid = (low + high) / 2;
-    const result = runSimulation({ ...simParams, annualIncome: mid });
-    const finalTotal = result[result.length - 1].Total;
-    if (finalTotal > legacyTarget + 1) low = mid; else high = mid;
-  }
-  const maxSustainableIncome = Math.round(low);
+  // Modelled income ceiling (same binary search as the live app, including legacy target)
+  const maxSustainableIncome = solveMaxIncome(simParams, legacyTarget);
 
   return {
     clientName: d.clientName || '', partnerName: d.partnerName || '',
-    clientAge, partnerAge, retirementAge, yearsUntilRetirement, projectionYears,
+    clientAge, partnerAge, retirementAge, yearsUntilRetirement, yearsUntilFullRetirement, projectionYears,
     totalPortfolio, portfolioAtRetirement, superAtRetirement,
     annualIncome, firstYearDrawdown, maxSustainableIncome, legacyTarget,
     projectionData
@@ -893,6 +363,8 @@ export default function WealthGuardTool() {
   // --- Planning ---
   const [projectionYears, setProjectionYears] = useState(30);
   const [annualIncome, setAnnualIncome]       = useState(60000);
+  const [clientWorkingIncome, setClientWorkingIncome] = useState(0);
+  const [partnerWorkingIncome, setPartnerWorkingIncome] = useState(0);
   const [contributionAmount, setContributionAmount]   = useState(0);
   const [contributionFrequency, setContributionFrequency] = useState('annual');
 
@@ -904,6 +376,9 @@ export default function WealthGuardTool() {
   const [clientKsEmployer, setClientKsEmployer] = useState(3.5); // employer %
   const [partnerKsRate, setPartnerKsRate] = useState(3.5);
   const [partnerKsEmployer, setPartnerKsEmployer] = useState(3.5);
+
+  const [clientEsctRate, setClientEsctRate] = useState(null);
+  const [partnerEsctRate, setPartnerEsctRate] = useState(null);
 
   // --- Income reduction in later retirement (e.g. 20% less after year 15) ---
   const [incomeReductionEnabled, setIncomeReductionEnabled] = useState(false);
@@ -949,7 +424,7 @@ export default function WealthGuardTool() {
   const [badFirstYearEnabled, setBadFirstYearEnabled] = useState(false);
   const [badFirstYearShockPercent, setBadFirstYearShockPercent] = useState(-20);
 
-  // --- Legacy / inheritance target (Max Sustainable Income solves down to this instead of $0) ---
+  // --- Legacy / inheritance target (Modelled Income Ceiling solves down to this instead of $0) ---
   const [legacyTarget, setLegacyTarget] = useState(0);
 
   // --- Display: show all chart dollar figures in today's purchasing power ---
@@ -1011,8 +486,8 @@ export default function WealthGuardTool() {
   useEffect(() => {
     supabase.from('scenarios').select('*').order('created_at', { ascending: false })
       .then(({ data, error }) => {
-        if (error) { console.error('Failed to load scenarios', error); return; }
-        setScenarios(data.map(row => ({
+        if (error) { console.error('Failed to load scenarios', error); window.alert('Could not load saved scenarios: ' + error.message); return; }
+        setScenarios((data || []).map(row => ({
           id: row.id, name: row.name, savedAt: row.created_at, data: row.data
         })));
       });
@@ -1020,15 +495,12 @@ export default function WealthGuardTool() {
 
   // --- Derived values ---
   const isJoint = partnerName.trim() !== '';
-  // Each person's own years-until-retirement — drives when THEIR contributions and
-  // KiwiSaver stop. The household figure (used for bucket reallocation and when full
-  // portfolio drawdown begins) is the LATER of the two: while one partner still works,
-  // their income covers living costs and the portfolio isn't yet relied on for income.
+  // Drawdown and retirement buckets start at the first retirement. Contributions
+  // and working-income offsets stop separately for each person.
   const yearsUntilClientRetirement = Math.max(0, retirementAge - clientAge);
   const yearsUntilPartnerRetirement = isJoint ? Math.max(0, partnerRetirementAge - partnerAge) : 0;
-  const yearsUntilRetirement = isJoint
-    ? Math.max(yearsUntilClientRetirement, yearsUntilPartnerRetirement)
-    : yearsUntilClientRetirement;
+  const {first: yearsUntilRetirement, full: yearsUntilFullRetirement} = retirementTimeline(
+    yearsUntilClientRetirement, yearsUntilPartnerRetirement, isJoint);
 
   // --- Quick-nav sidebar (screen only) ---
   const [activeSection, setActiveSection] = useState('sec-client');
@@ -1050,7 +522,7 @@ export default function WealthGuardTool() {
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const totalInvestments = currentInvestments.reduce((s, i) => s + i.amount, 0);
+  const totalInvestments = currentInvestments.filter(i => isJoint || i.id !== 2).reduce((s, i) => s + i.amount, 0);
   const totalPortfolio   = cash + termDeposits + totalInvestments;
   const annualContribution =
     contributionFrequency === 'weekly'      ? contributionAmount * 52 :
@@ -1058,6 +530,7 @@ export default function WealthGuardTool() {
     contributionFrequency === 'monthly'     ? contributionAmount * 12 :
     contributionAmount;
 
+  const restoredHoldingsRef = useRef(null);
   // Auto-calculate the allocation percentages from each holding's assigned bucket.
   // Whenever a dollar amount or bucket assignment changes, this recomputes and
   // overwrites the relevant allocation percentages — but the percentage fields
@@ -1067,6 +540,9 @@ export default function WealthGuardTool() {
   // existing percentages untouched (so older scenarios with no bucket data are
   // unaffected until the adviser starts assigning buckets).
   useEffect(() => {
+    const signature = JSON.stringify([cash,termDeposits,cashBucket,termDepositsBucket,currentInvestments,isJoint,yearsUntilRetirement]);
+    if (restoredHoldingsRef.current === signature) { restoredHoldingsRef.current = null; return; }
+    restoredHoldingsRef.current = null;
     const isAccum = yearsUntilRetirement > 0;
     const metaKeys = isAccum
       ? ['cashSavings', 'balancedPortfolio', 'growthPortfolio']
@@ -1075,7 +551,7 @@ export default function WealthGuardTool() {
     const sums = Object.fromEntries(metaKeys.map((k) => [k, 0]));
     if (cashBucket && Object.prototype.hasOwnProperty.call(sums, cashBucket)) sums[cashBucket] += cash;
     if (termDepositsBucket && Object.prototype.hasOwnProperty.call(sums, termDepositsBucket)) sums[termDepositsBucket] += termDeposits;
-    currentInvestments.forEach((inv) => {
+    currentInvestments.filter(i => isJoint || i.id !== 2).forEach((inv) => {
       if (inv.bucket && Object.prototype.hasOwnProperty.call(sums, inv.bucket)) sums[inv.bucket] += (inv.amount || 0);
     });
 
@@ -1087,15 +563,15 @@ export default function WealthGuardTool() {
 
     if (isAccum) setAccumulationAllocations(rounded);
     else setAllocations(rounded);
-  }, [cash, termDeposits, cashBucket, termDepositsBucket, currentInvestments, yearsUntilRetirement, totalPortfolio]);
+  }, [cash, termDeposits, cashBucket, termDepositsBucket, currentInvestments, yearsUntilRetirement, totalPortfolio, isJoint]);
 
   // Which bucket options to offer right now, and how much has actually been assigned
   // to one — both used by the Current Investments card above.
   const currentBucketOptions = yearsUntilRetirement > 0 ? ACCUM_BUCKET_META : BUCKET_META;
   const investmentBucketAssignedTotal =
-    (cashBucket ? cash : 0) +
-    (termDepositsBucket ? termDeposits : 0) +
-    currentInvestments.reduce((s, i) => s + (i.bucket ? (i.amount || 0) : 0), 0);
+    (currentBucketOptions.some(b => b.key === cashBucket) ? cash : 0) +
+    (currentBucketOptions.some(b => b.key === termDepositsBucket) ? termDeposits : 0) +
+    currentInvestments.filter(i => isJoint || i.id !== 2).reduce((s, i) => s + (currentBucketOptions.some(b => b.key === i.bucket) ? (i.amount || 0) : 0), 0);
 
   // --- Gifting calculator (Residential Care Subsidy asset-test) ---
   // MSD allows limited gifting without it being treated as "deprivation of assets" and
@@ -1151,6 +627,7 @@ export default function WealthGuardTool() {
     let poolWithGifting = assessableAssets;
     let poolNoGifting = assessableAssets;
     let cumulativeGifted = 0;
+    let allowanceUsed = Math.max(0, giftingAlreadyGifted);
 
     for (let year = 0; year < yearsUntilCare; year++) {
       poolWithGifting *= (1 + growth);
@@ -1164,7 +641,9 @@ export default function WealthGuardTool() {
       // Gifting beyond the legal limit for the period defeats the purpose (the excess
       // gets added back), so the amount is capped at whichever applies that year —
       // and can never exceed what's actually left in the pool.
-      const giftThisYear = Math.max(0, Math.min(desiredGift, periodLimit, poolWithGifting));
+      const availableLimit = Math.max(0, periodLimit - allowanceUsed);
+      allowanceUsed = Math.max(0, allowanceUsed - periodLimit);
+      const giftThisYear = Math.max(0, Math.min(desiredGift, availableLimit, poolWithGifting));
       poolWithGifting = Math.max(0, poolWithGifting - giftThisYear);
       cumulativeGifted += giftThisYear;
       schedule.push({
@@ -1188,14 +667,14 @@ export default function WealthGuardTool() {
       meetsThresholdWithGifting: poolWithGifting <= threshold,
       meetsThresholdNoGifting: poolNoGifting <= threshold
     };
-  }, [giftingResult, wealthTransferGrowthRate, wealthTransferStrategy, wealthTransferCustomAnnual]);
+  }, [giftingResult, giftingAlreadyGifted, wealthTransferGrowthRate, wealthTransferStrategy, wealthTransferCustomAnnual]);
 
   // Annual KiwiSaver contributions (employee + employer matched, for client and partner)
   const annualKsClient = ksEnabled
-    ? clientSalary * (clientKsRate / 100) + clientSalary * (clientKsEmployer / 100)
+    ? annualKiwiSaver(clientSalary, clientKsRate, clientKsEmployer, clientEsctRate)
     : 0;
   const annualKsPartner = ksEnabled && isJoint
-    ? partnerSalary * (partnerKsRate / 100) + partnerSalary * (partnerKsEmployer / 100)
+    ? annualKiwiSaver(partnerSalary, partnerKsRate, partnerKsEmployer, partnerEsctRate)
     : 0;
   const annualKsTotal = annualKsClient + annualKsPartner;
 
@@ -1232,14 +711,14 @@ export default function WealthGuardTool() {
     const clientHouseholdTodayRate = clientSuperIneligible ? 0 : (isJoint
       ? ((partnerAgeAtClient65 >= 65 && !partnerSuperIneligible) ? rates.couple_both_each * 2 * 26 : rates.couple_one * 26)
       : rates[livingSituation] * 26);
-    const clientSuperFV = clientHouseholdTodayRate * Math.pow(1 + INFLATION_RATE, yearsToClient65);
+    const clientSuperFV = clientHouseholdTodayRate * (inflateSuper ? Math.pow(1 + INFLATION_RATE, yearsToClient65) : 1);
 
     // Household super when partner hits 65 — client's age at that point determines rate
     const clientAgeAtPartner65 = clientAge + yearsToPartner65;
     const partnerHouseholdTodayRate = partnerSuperIneligible ? 0 : (isJoint
       ? ((clientAgeAtPartner65 >= 65 && !clientSuperIneligible) ? rates.couple_both_each * 2 * 26 : rates.couple_one * 26)
       : 0);
-    const partnerSuperFV = partnerHouseholdTodayRate * Math.pow(1 + INFLATION_RATE, yearsToPartner65);
+    const partnerSuperFV = partnerHouseholdTodayRate * (inflateSuper ? Math.pow(1 + INFLATION_RATE, yearsToPartner65) : 1);
 
     return {
       yearsToClient65,
@@ -1249,10 +728,15 @@ export default function WealthGuardTool() {
       // True when the client and partner reach 65 in different years (i.e. different ages today)
       ageGap: isJoint && clientAge !== partnerAge
     };
-  }, [clientAge, partnerAge, isJoint, useGrossSuper, livingSituation, clientSuperIneligible, partnerSuperIneligible]);
+  }, [clientAge, partnerAge, isJoint, useGrossSuper, livingSituation, clientSuperIneligible, partnerSuperIneligible, inflateSuper]);
 
   // --- Simulation ---
+  const lockedKiwiSaver = useMemo(() => makeKiwiSaverPools(currentInvestments, clientAge, partnerAge, isJoint,
+    yearsUntilClientRetirement, yearsUntilPartnerRetirement, annualKsClient, annualKsPartner),
+    [currentInvestments, clientAge, partnerAge, isJoint, yearsUntilClientRetirement, yearsUntilPartnerRetirement, annualKsClient, annualKsPartner]);
   const simulationParams = useMemo(() => ({
+    lockedKiwiSaver,
+    clientWorkingIncome, partnerWorkingIncome: isJoint ? partnerWorkingIncome : 0,
     totalPortfolio, allocations, accumulationAllocations, returns,
     accumulationReturns,
     yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
@@ -1263,9 +747,10 @@ export default function WealthGuardTool() {
     badFirstYearEnabled, badFirstYearShockPercent,
     accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
     cashMonths: recSettings.cashMonths
-  }), [totalPortfolio, allocations, accumulationAllocations, returns,
+  }), [lockedKiwiSaver, totalPortfolio, allocations, accumulationAllocations, returns,
       accumulationReturns,
       yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+      clientWorkingIncome, partnerWorkingIncome, isJoint,
       projectionYears, annualContribution,
       annualKsClient, annualKsPartner,
       incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
@@ -1279,22 +764,15 @@ export default function WealthGuardTool() {
     [simulationParams, annualIncome]
   );
 
-  // Max sustainable income — binary search
+  // Modelled income ceiling — binary search
   const maxSustainableIncome = useMemo(() => {
-    if (totalPortfolio <= 0 || projectionYears <= 0) return 0;
-    let low = 0;
-    let high = Math.max(annualIncome * 5, 500000, totalPortfolio);
-    const target = Math.max(0, legacyTarget);
-    for (let i = 0; i < 60; i++) {
-      const mid = (low + high) / 2;
-      const result = runSimulation({ ...simulationParams, annualIncome: mid });
-      const finalTotal = result[result.length - 1].Total;
-      if (finalTotal > target + 1) low = mid; else high = mid;
-    }
-    return Math.round(low);
-  }, [simulationParams, annualIncome, totalPortfolio, projectionYears, legacyTarget]);
+    return solveMaxIncome(simulationParams, legacyTarget);
+  }, [simulationParams, legacyTarget]);
 
-  const maxSustainableDrawdown = Math.max(0, maxSustainableIncome - superAtRetirement);
+  const firstYearWorkingIncome = (yearsUntilRetirement < yearsUntilClientRetirement ? clientWorkingIncome : 0) + (isJoint && yearsUntilRetirement < yearsUntilPartnerRetirement ? partnerWorkingIncome : 0);
+  const firstYearSuperToday = inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement);
+  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - firstYearSuperToday);
+  const maxSustainableDrawdown = Math.max(0, maxSustainableIncome - firstYearWorkingIncome - firstYearSuperToday);
 
   // Upper bound for the live income slider — generous headroom above whichever is
   // larger: the sustainable ceiling or the current target, rounded to a clean $10k step.
@@ -1310,21 +788,25 @@ export default function WealthGuardTool() {
     return entry ? entry.Total : totalPortfolio;
   }, [projectionData, yearsUntilRetirement, totalPortfolio]);
 
+  const accessibleAtRetirement = projectionData.find(d => d.year === yearsUntilRetirement)?.accessibleTotal ?? totalPortfolio;
+  const invalidLumpTiming = accumulationLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.year) || ls.year < 0 || ls.year >= yearsUntilRetirement)) || retirementLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.yearFromRetirement) || ls.yearFromRetirement < 0 || ls.yearFromRetirement >= projectionYears));
+  const planFunded = !invalidLumpTiming && isPlanFunded(projectionData, legacyTarget);
+  const totalShortfall = projectionData.reduce((sum,d) => sum + d.shortfall + d.lumpSumShortfall, 0);
   // --- Allocation dollar values ---
   // Retirement allocation is shown as at the start of retirement (future value)
   const retirementAllocDollars = useMemo(() => ({
-    cashSavings:      portfolioAtRetirement * (allocations.cashSavings / 100),
-    termDeposit:      portfolioAtRetirement * (allocations.termDeposit / 100),
-    incomePortfolio:  portfolioAtRetirement * (allocations.incomePortfolio / 100),
-    balancedPortfolio:portfolioAtRetirement * (allocations.balancedPortfolio / 100),
-    growthPortfolio:  portfolioAtRetirement * (allocations.growthPortfolio / 100)
-  }), [portfolioAtRetirement, allocations]);
+    cashSavings:      accessibleAtRetirement * (normaliseAllocations(allocations).cashSavings / 100),
+    termDeposit:      accessibleAtRetirement * (normaliseAllocations(allocations).termDeposit / 100),
+    incomePortfolio:  accessibleAtRetirement * (normaliseAllocations(allocations).incomePortfolio / 100),
+    balancedPortfolio:accessibleAtRetirement * (normaliseAllocations(allocations).balancedPortfolio / 100),
+    growthPortfolio:  accessibleAtRetirement * (normaliseAllocations(allocations).growthPortfolio / 100)
+  }), [accessibleAtRetirement, allocations]);
 
   // Accumulation allocation is shown as at today's portfolio value
   const accumulationAllocDollars = useMemo(() => ({
-    cashSavings:      totalPortfolio * (accumulationAllocations.cashSavings / 100),
-    balancedPortfolio:totalPortfolio * (accumulationAllocations.balancedPortfolio / 100),
-    growthPortfolio:  totalPortfolio * (accumulationAllocations.growthPortfolio / 100)
+    cashSavings:      totalPortfolio * (normaliseAllocations(accumulationAllocations).cashSavings / 100),
+    balancedPortfolio:totalPortfolio * (normaliseAllocations(accumulationAllocations).balancedPortfolio / 100),
+    growthPortfolio:  totalPortfolio * (normaliseAllocations(accumulationAllocations).growthPortfolio / 100)
   }), [totalPortfolio, accumulationAllocations]);
 
   const totalAllocation = Object.values(allocations).reduce((a, b) => a + b, 0);
@@ -1351,13 +833,13 @@ export default function WealthGuardTool() {
   const updateInvestment = (id, field, value) => setCurrentInvestments(currentInvestments.map(i =>
     i.id === id ? { ...i, [field]: field === 'amount' ? (parseFloat(value) || 0) : value } : i));
 
-  const updateAllocation = (k, v) => setAllocations(p => ({ ...p, [k]: parseFloat(v) || 0 }));
-  const updateAccumulationAllocation = (k, v) => setAccumulationAllocations(p => ({ ...p, [k]: parseFloat(v) || 0 }));
-  const updateReturn = (k, v) => setReturns(p => ({ ...p, [k]: parseFloat(v) || 0 }));
-  const updateAccumulationReturn = (k, v) => setAccumulationReturns(p => ({ ...p, [k]: parseFloat(v) || 0 }));
-  const updateRecSetting = (k, v) => setRecSettings(p => ({ ...p, [k]: parseFloat(v) || 0 }));
-  const updateVolatility = (k, v) => setVolatilities(p => ({ ...p, [k]: parseFloat(v) || 0 }));
-  const updateMcSetting = (k, v) => setMcSettings(p => ({ ...p, [k]: parseFloat(v) || 0 }));
+  const updateAllocation = (k, v) => setAllocations(p => ({ ...p, [k]: Math.max(0, parseFloat(v) || 0) }));
+  const updateAccumulationAllocation = (k, v) => setAccumulationAllocations(p => ({ ...p, [k]: Math.max(0, parseFloat(v) || 0) }));
+  const updateReturn = (k, v) => setReturns(p => ({ ...p, [k]: Math.max(-100, parseFloat(v) || 0) }));
+  const updateAccumulationReturn = (k, v) => setAccumulationReturns(p => ({ ...p, [k]: Math.max(-100, parseFloat(v) || 0) }));
+  const updateRecSetting = (k, v) => setRecSettings(p => ({ ...p, [k]: Math.max(0, parseFloat(v) || 0) }));
+  const updateVolatility = (k, v) => setVolatilities(p => ({ ...p, [k]: Math.max(0, parseFloat(v) || 0) }));
+  const updateMcSetting = (k, v) => setMcSettings(p => ({ ...p, [k]: Math.max(0, parseFloat(v) || 0) }));
   // Auto-re-run: once the Monte Carlo has been run at least once, re-run it
   // automatically whenever an input changes so the results always match the figures
   // on screen. Debounced so rapid typing doesn't fire many simulations — it waits
@@ -1370,7 +852,7 @@ export default function WealthGuardTool() {
     const t = setTimeout(() => { if (mcRunFnRef.current) mcRunFnRef.current(); }, 600);
     return () => clearTimeout(t);
   }, [
-    totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns, volatilities,
+    simulationParams, legacyTarget, totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns, volatilities,
     annualIncome, projectionYears, mcSettings.downYearThreshold, mcAccumulationEnabled,
     annualContribution, annualKsClient, annualKsPartner, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
     incomeReductionEnabled, incomeReductionAfterYears,
@@ -1380,7 +862,7 @@ export default function WealthGuardTool() {
 
   // Lump sum management
   const addAccumLumpSum = () => setAccumulationLumpSums([...accumulationLumpSums,
-    { id: Date.now(), year: 1, amount: 0, label: '', type: 'deposit' }]);
+    { id: Date.now(), year: 0, amount: 0, label: '', type: 'deposit' }]);
   const updateAccumLumpSum = (id, field, value) => setAccumulationLumpSums(accumulationLumpSums.map(ls =>
     ls.id === id ? { ...ls, [field]: ['year', 'amount'].includes(field) ? (parseFloat(value) || 0) : value } : ls));
   const removeAccumLumpSum = (id) => setAccumulationLumpSums(accumulationLumpSums.filter(ls => ls.id !== id));
@@ -1394,7 +876,7 @@ export default function WealthGuardTool() {
   // Apply recommendation — uses largest-remainder rounding so percentages always sum to exactly 100
   // Based on the portfolio value and expenses as-at the first year of retirement
   const applyRecommendation = () => {
-    const portfolio = portfolioAtRetirement;
+    const portfolio = accessibleAtRetirement;
     if (portfolio <= 0 || annualIncome <= 0) return;
     // Inflate today's required income to the first year of retirement
     const expensesAtRetirement = annualIncome * Math.pow(1 + 0.02, yearsUntilRetirement);
@@ -1409,20 +891,12 @@ export default function WealthGuardTool() {
     const incomePctRaw   = remainingPct * (recSettings.incomePct   / invTotal);
     const balancedPctRaw = remainingPct * (recSettings.balancedPct / invTotal);
 
-    // Round first four to 1 dp, use growth as balancer so total = exactly 100
-    const cashPct     = Math.round(cashPctRaw * 10) / 10;
-    const tdPct       = Math.round(tdPctRaw * 10) / 10;
-    const incomePct   = Math.round(incomePctRaw * 10) / 10;
-    const balancedPct = Math.round(balancedPctRaw * 10) / 10;
-    const growthPct   = Math.round((100 - cashPct - tdPct - incomePct - balancedPct) * 10) / 10;
-
-    setAllocations({
-      cashSavings:       cashPct,
-      termDeposit:       tdPct,
-      incomePortfolio:   incomePct,
-      balancedPortfolio: balancedPct,
-      growthPortfolio:   Math.max(0, growthPct)
-    });
+    const growthPctRaw = remainingPct * recSettings.growthPct / invTotal;
+    if (remainingPct > 0 && recSettings.incomePct + recSettings.balancedPct + recSettings.growthPct <= 0) {
+      window.alert('Enter a positive invested split before applying the recommendation.'); return;
+    }
+    setAllocations(largestRemainderRound({cashSavings:cashPctRaw, termDeposit:tdPctRaw,
+      incomePortfolio:incomePctRaw, balancedPortfolio:balancedPctRaw, growthPortfolio:growthPctRaw}));
   };
 
   // Monte Carlo — runs on demand and (after the first run) automatically when inputs
@@ -1434,10 +908,11 @@ export default function WealthGuardTool() {
     setTimeout(() => {
       try {
         const params = {
+          lockedKiwiSaver, legacyTarget, badFirstYearEnabled, badFirstYearShockPercent,
           totalPortfolio, allocations, accumulationAllocations, returns, volatilities,
           accumulationReturns, mcAccumulationEnabled,
           yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
-          projectionYears, annualContribution, annualIncome,
+          projectionYears, annualContribution, annualIncome, clientWorkingIncome, partnerWorkingIncome: isJoint ? partnerWorkingIncome : 0,
           annualKsClient, annualKsPartner,
           incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
           agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
@@ -1477,11 +952,12 @@ export default function WealthGuardTool() {
     clientName, partnerName, clientAge, partnerAge, retirementAge, partnerRetirementAge,
     livingSituation, useGrossSuper, inflateSuper, clientSuperIneligible, partnerSuperIneligible,
     currentInvestments, cash, termDeposits, cashBucket, termDepositsBucket,
-    projectionYears, annualIncome, contributionAmount, contributionFrequency,
-    ksEnabled, clientSalary, partnerSalary,
+    projectionYears, annualIncome, contributionAmount, contributionFrequency, clientWorkingIncome, partnerWorkingIncome,
+    ksEnabled, clientSalary, partnerSalary, clientEsctRate, partnerEsctRate,
     clientKsRate, clientKsEmployer, partnerKsRate, partnerKsEmployer,
     incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
     agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
+    giftingCalcEnabled, giftingYearsUntilCare, giftingAlreadyGifted, giftingThresholdCategory, giftingAssetsOverride, giftingNearLimitAnnual, giftingBothApplyingTogether, giftingFarLimitHousehold, giftingThresholds, wealthTransferEnabled, wealthTransferGrowthRate, wealthTransferStrategy, wealthTransferCustomAnnual,
     badFirstYearEnabled, badFirstYearShockPercent, legacyTarget, showTodaysDollars,
     accumulationLumpSums, retirementLumpSums,
     allocations, accumulationAllocations, returns, recSettings,
@@ -1489,6 +965,26 @@ export default function WealthGuardTool() {
   });
 
   const restore = (s) => {
+    validateScenario(s);
+    const restoredInvestments = [...(s.currentInvestments ?? []), ...[1,2].filter(id => !(s.currentInvestments ?? []).some(i => i.id === id)).map(id => ({id,label:'',amount:0,bucket:''}))];
+    const joint = (s.partnerName || '').trim() !== '';
+    const clientYears = Math.max(0,(s.retirementAge ?? 65)-(s.clientAge ?? 60));
+    const partnerYears = joint ? Math.max(0,(s.partnerRetirementAge ?? ((s.partnerAge ?? 60)+clientYears))-(s.partnerAge ?? 60)) : 0;
+    restoredHoldingsRef.current = JSON.stringify([s.cash ?? 0,s.termDeposits ?? 0,s.cashBucket ?? '',s.termDepositsBucket ?? '',restoredInvestments,joint,retirementTimeline(clientYears,partnerYears,joint).first]);
+    setGiftingCalcEnabled(s.giftingCalcEnabled ?? false);
+    setGiftingYearsUntilCare(s.giftingYearsUntilCare ?? null);
+    setGiftingAlreadyGifted(s.giftingAlreadyGifted ?? 0);
+    setGiftingThresholdCategory(s.giftingThresholdCategory ?? 'couple_excl_home');
+    setGiftingAssetsOverride(s.giftingAssetsOverride ?? null);
+    setGiftingNearLimitAnnual(s.giftingNearLimitAnnual ?? 8500);
+    setGiftingBothApplyingTogether(s.giftingBothApplyingTogether ?? false);
+    setGiftingFarLimitHousehold(s.giftingFarLimitHousehold ?? 27000);
+    setGiftingThresholds(s.giftingThresholds ?? {single:300811, coupleInclHome:300811, coupleExclHome:164731});
+    setWealthTransferEnabled(s.wealthTransferEnabled ?? false);
+    setWealthTransferGrowthRate(s.wealthTransferGrowthRate ?? 5);
+    setWealthTransferStrategy(s.wealthTransferStrategy ?? 'max');
+    setWealthTransferCustomAnnual(s.wealthTransferCustomAnnual ?? 0);
+
     setClientName(s.clientName ?? '');
     setPartnerName(s.partnerName ?? '');
     setClientAge(s.clientAge ?? 60);
@@ -1507,16 +1003,20 @@ export default function WealthGuardTool() {
     setInflateSuper(s.inflateSuper ?? true);
     setClientSuperIneligible(s.clientSuperIneligible ?? false);
     setPartnerSuperIneligible(s.partnerSuperIneligible ?? false);
-    setCurrentInvestments(s.currentInvestments ?? []);
+    setCurrentInvestments(restoredInvestments);
     setCash(s.cash ?? 0);
     setTermDeposits(s.termDeposits ?? 0);
     setCashBucket(s.cashBucket ?? '');
     setTermDepositsBucket(s.termDepositsBucket ?? '');
     setProjectionYears(s.projectionYears ?? 30);
     setAnnualIncome(s.annualIncome ?? 0);
+    setClientWorkingIncome(s.clientWorkingIncome ?? 0);
+    setPartnerWorkingIncome(s.partnerWorkingIncome ?? 0);
     setContributionAmount(s.contributionAmount ?? 0);
     setContributionFrequency(s.contributionFrequency ?? 'annual');
     setKsEnabled(s.ksEnabled ?? false);
+    setClientEsctRate(s.clientEsctRate ?? null);
+    setPartnerEsctRate(s.partnerEsctRate ?? null);
     setClientSalary(s.clientSalary ?? 0);
     setPartnerSalary(s.partnerSalary ?? 0);
     setClientKsRate(s.clientKsRate ?? 3.5);
@@ -1565,26 +1065,27 @@ export default function WealthGuardTool() {
   };
 
   const saveScenario = async () => {
+    try { validateScenario(snapshot()); } catch (e) { window.alert(e.message); return; }
     const name = newScenarioName.trim() || suggestScenarioName();
     const { data: userData } = await supabase.auth.getUser();
     const { data: row, error } = await supabase.from('scenarios')
       .insert({ name, data: snapshot(), created_by: userData?.user?.email || null })
       .select().single();
     if (error) { window.alert('Could not save scenario: ' + error.message); return; }
-    setScenarios([{ id: row.id, name: row.name, savedAt: row.created_at, data: row.data }, ...scenarios]);
+    setScenarios(prev => [{ id: row.id, name: row.name, savedAt: row.created_at, data: row.data }, ...prev]);
     setNewScenarioName(suggestScenarioName());
   };
 
   const loadScenario = (id) => {
     const scn = scenarios.find(s => s.id === id);
-    if (scn) { restore(scn.data); setShowScenariosPanel(false); }
+    if (scn) { try { restore(scn.data); setShowScenariosPanel(false); } catch (e) { window.alert(e.message); } }
   };
 
   const deleteScenario = async (id) => {
     if (!window.confirm('Delete this scenario?')) return;
     const { error } = await supabase.from('scenarios').delete().eq('id', id);
     if (error) { window.alert('Could not delete scenario: ' + error.message); return; }
-    setScenarios(scenarios.filter(s => s.id !== id));
+    setScenarios(prev => prev.filter(s => s.id !== id));
   };
 
   // Download a single scenario as a .json file (portable backup, immune to cache clearing).
@@ -1614,6 +1115,7 @@ export default function WealthGuardTool() {
   const handleImportFile = (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { window.alert('Scenario files must be under 2 MB.'); return; }
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
@@ -1624,6 +1126,7 @@ export default function WealthGuardTool() {
           window.alert('That file doesn\'t look like a WealthGuard scenario export.');
           return;
         }
+        validateScenario(scn.data);
         const name = (scn.name || 'Imported scenario') + ' (imported)';
         const { data: userData } = await supabase.auth.getUser();
         const { data: row, error } = await supabase.from('scenarios')
@@ -1631,7 +1134,7 @@ export default function WealthGuardTool() {
           .select().single();
         if (error) { window.alert('Could not import scenario: ' + error.message); return; }
         const imported = { id: row.id, name: row.name, savedAt: row.created_at, data: row.data };
-        setScenarios([imported, ...scenarios]);
+        setScenarios(prev => [imported, ...prev]);
         restore(imported.data);
         setShowScenariosPanel(false);
         window.alert('Scenario imported and loaded: ' + imported.name);
@@ -1678,6 +1181,7 @@ export default function WealthGuardTool() {
       const factor = Math.pow(1 + INFLATION_RATE, d.year);
       const deflate = (v) => Math.round((v || 0) / factor);
       const drawdownActualReal = deflate(d.drawdownActual);
+      const openingCumulativeReal = cumulativeReal;
       cumulativeReal += drawdownActualReal;
       return {
         ...d,
@@ -1687,9 +1191,11 @@ export default function WealthGuardTool() {
         'Steady Growth': deflate(d['Steady Growth']),
         'Strategic Long Term Growth': deflate(d['Strategic Long Term Growth']),
         Total: deflate(d.Total),
+        accessibleTotal: deflate(d.accessibleTotal), lockedKiwiSaver: deflate(d.lockedKiwiSaver),
         drawdownRequired: deflate(d.drawdownRequired),
         drawdownActual: drawdownActualReal,
-        cumulativeDrawdown: cumulativeReal,
+        cumulativeDrawdown: openingCumulativeReal,
+        employmentIncome: deflate(d.employmentIncome),
         superIncome: deflate(d.superIncome),
         agedCareCost: deflate(d.agedCareCost)
       };
@@ -1701,6 +1207,7 @@ export default function WealthGuardTool() {
   // two charts always agree on which dollar basis they're showing.
   const drawdownChartData = displayProjectionData.map(d => ({
     year: d.year,
+    'Net Working Income': d.employmentIncome,
     'Annual Drawdown': d.drawdownActual,
     'Required Drawdown': d.drawdownRequired,
     'Cumulative Drawdown': d.cumulativeDrawdown
@@ -1890,6 +1397,16 @@ export default function WealthGuardTool() {
           </div>
         </div>
 
+        <div className="bg-white border border-blue-200 rounded-lg p-4 mb-6 text-sm">
+          <p><strong>Planning basis:</strong> Income and care costs are entered in today's NZD and inflated from today at 2% p.a. Returns must be net of all fund, platform and advice fees and investment tax. Contributions and lump sums enter at the start of each year; spending is drawn at year end.</p>
+          <p className="mt-2">KiwiSaver stays locked until each person's age 65 and uses the accumulation strategy until then. Household retirement spending starts when the first person retires. Enter net working income available for household spending to offset the drawdown until that person also retires; blank amounts mean no wage offset. Cash and term-deposit returns are fixed assumptions, not guarantees.</p>
+          <p className="mt-2 no-print"><strong>Scenario saving:</strong> {storageMode === 'local' ? 'Local review mode — saved only in this browser. Download JSON backups; cloud sharing is not connected.' : 'Supabase connected — access depends on your existing authentication and database policies.'}</p>
+          {(Math.abs(totalAllocation-100)>0.1 || (yearsUntilRetirement>0 && Math.abs(totalAccumulationAllocation-100)>0.1)) && <p className="mt-2 text-amber-800">Allocation inputs are treated as relative weights and scaled to 100% for the projection and displayed dollar values. Set them to 100% before finalising advice; zero weights fall back to cash.</p>}
+          {(accumulationLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.year) || ls.year < 0 || ls.year >= yearsUntilRetirement)) || retirementLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.yearFromRetirement) || ls.yearFromRetirement < 0 || ls.yearFromRetirement >= projectionYears))) && <p className="mt-2 text-red-700" role="alert">A lump sum falls outside the modelled years or has a fractional year and will not be applied. Correct its timing before using the projection.</p>}
+          {useGrossSuper && <p className="mt-2 text-amber-800">Gross NZ Super is being offset against spending without a personal tax calculation. Use the net setting for an after-tax spending plan.</p>}
+          {!planFunded && <p role="alert" className="mt-2 font-semibold text-red-700">Plan does not meet all spending and legacy requirements. Unfunded spending/lump sums: ${Math.round(totalShortfall).toLocaleString()} over the projection.</p>}
+        </div>
+
         {/* =============== SCENARIOS PANEL =============== */}
         {showScenariosPanel && (
           <div className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print border-2 border-slate-700">
@@ -1919,7 +1436,7 @@ export default function WealthGuardTool() {
               )}
             </div>
             <p className="text-xs text-slate-500 mb-4 -mt-2">
-              Scenarios are stored in this browser only. To move one to another computer, download it (the <FileDown size={11} className="inline"/> icon),
+              {storageMode === 'local' ? 'Scenarios are stored in this browser only.' : 'Scenarios are saved to your configured Supabase database.'} Download a portable backup (the <FileDown size={11} className="inline"/> icon),
               then use <strong>Import from file</strong> here on the other machine.
             </p>
             {scenarios.length === 0 ? (
@@ -1990,7 +1507,7 @@ export default function WealthGuardTool() {
             { label: 'NZ Super at retirement', get: (s) => Math.round(s.superAtRetirement), money: true },
             { label: 'Target income', get: (s) => s.annualIncome, money: true },
             { label: 'First-year drawdown', get: (s) => Math.round(s.firstYearDrawdown), money: true },
-            { label: 'Max sustainable income', get: (s) => s.maxSustainableIncome, money: true },
+            { label: 'Modelled income ceiling', get: (s) => s.maxSustainableIncome, money: true },
             { label: 'Legacy target', get: (s) => s.legacyTarget, money: true }
           ];
 
@@ -2056,8 +1573,8 @@ export default function WealthGuardTool() {
                         <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
                         <Tooltip formatter={(v) => v == null ? 'n/a' : `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`}/>
                         <Legend/>
-                        <Line type="monotone" dataKey="TotalA" name={`A: ${labelA}`} stroke="#2563eb" strokeWidth={2.5} dot={false} connectNulls/>
-                        <Line type="monotone" dataKey="TotalB" name={`B: ${labelB}`} stroke="#9333ea" strokeWidth={2.5} dot={false} connectNulls/>
+                        <Line isAnimationActive={false} type="monotone" dataKey="TotalA" name={`A: ${labelA}`} stroke="#2563eb" strokeWidth={2.5} dot={false} connectNulls/>
+                        <Line isAnimationActive={false} type="monotone" dataKey="TotalB" name={`B: ${labelB}`} stroke="#9333ea" strokeWidth={2.5} dot={false} connectNulls/>
                       </LineChart>
                     </ResponsiveContainer>
                     <p className="text-xs text-slate-500 mt-2">
@@ -2084,13 +1601,13 @@ export default function WealthGuardTool() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Client Age</label>
-              <input type="number" value={clientAge} onChange={(e) => setClientAge(parseInt(e.target.value) || 0)}
+              <input type="number" value={clientAge} onChange={(e) => setClientAge(Math.max(0, Math.min(120, parseInt(e.target.value) || 0)))}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md no-print"/>
               <span className="hidden print:block">{clientAge}</span>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Retirement Age</label>
-              <input type="number" value={retirementAge} onChange={(e) => setRetirementAge(parseInt(e.target.value) || 65)}
+              <input type="number" value={retirementAge} onChange={(e) => setRetirementAge(Math.max(0, Math.min(120, parseInt(e.target.value) || 65)))}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md no-print"/>
               <span className="hidden print:block">{retirementAge}</span>
             </div>
@@ -2103,7 +1620,7 @@ export default function WealthGuardTool() {
             {isJoint && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Partner Age</label>
-                <input type="number" value={partnerAge} onChange={(e) => setPartnerAge(parseInt(e.target.value) || 0)}
+                <input type="number" value={partnerAge} onChange={(e) => setPartnerAge(Math.max(0, Math.min(120, parseInt(e.target.value) || 0)))}
                   className="w-full px-3 py-2 border border-slate-300 rounded-md no-print"/>
                 <span className="hidden print:block">{partnerAge}</span>
               </div>
@@ -2111,12 +1628,12 @@ export default function WealthGuardTool() {
             {isJoint && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Partner Retirement Age</label>
-                <input type="number" value={partnerRetirementAge} onChange={(e) => setPartnerRetirementAge(parseInt(e.target.value) || 65)}
+                <input type="number" value={partnerRetirementAge} onChange={(e) => setPartnerRetirementAge(Math.max(0, Math.min(120, parseInt(e.target.value) || 65)))}
                   className="w-full px-3 py-2 border border-slate-300 rounded-md no-print"/>
                 <span className="hidden print:block">{partnerRetirementAge}</span>
                 {partnerRetirementAge !== retirementAge && (
                   <p className="text-xs text-slate-500 mt-1 no-print">
-                    Full portfolio drawdown begins once both have retired — year {yearsUntilRetirement} (age {clientAge + yearsUntilRetirement} / {partnerAge + yearsUntilRetirement}).
+                    Retirement spending begins in year {yearsUntilRetirement}; both retire by year {yearsUntilFullRetirement} (age {clientAge + yearsUntilRetirement} / {partnerAge + yearsUntilRetirement}).
                   </p>
                 )}
               </div>
@@ -2133,7 +1650,7 @@ export default function WealthGuardTool() {
               </div>
             )}
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Super at Retirement (age {retirementAge})</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">NZ Super at Retirement (today's rates)</label>
               <div className="w-full px-3 py-2 bg-slate-100 border rounded-md font-medium">
                 ${Math.round(superAtRetirement).toLocaleString()}/yr
                 {(clientSuperIneligible || (isJoint && partnerSuperIneligible)) && (
@@ -2319,7 +1836,7 @@ export default function WealthGuardTool() {
                   </div>
                 ))}
                 <p className="text-xs text-slate-500 mt-2 italic">
-                  Used for {yearsUntilRetirement} year{yearsUntilRetirement !== 1 ? 's' : ''} until retirement. Reallocates to the retirement mix at age {retirementAge}.
+                  Used for {yearsUntilRetirement} year{yearsUntilRetirement !== 1 ? 's' : ''} until retirement. Reallocates to the retirement mix at client age {clientAge + yearsUntilRetirement}.
                 </p>
 
                 {/* Accumulation-phase returns (separate from retirement strategy) */}
@@ -2346,7 +1863,7 @@ export default function WealthGuardTool() {
                     ))}
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
-                    These drive growth up to retirement. The retirement-strategy returns (below) take over once the buckets reallocate at age {retirementAge}.
+                    These drive growth up to retirement. The retirement-strategy returns (below) take over once the buckets reallocate at client age {clientAge + yearsUntilRetirement}.
                   </p>
                 </div>
               </div>
@@ -2356,7 +1873,7 @@ export default function WealthGuardTool() {
                 {accumulationPieData.length > 0 ? (
                   <PrintableChart screenHeight={320} printHeight={300} printWidth={330}>
                     <PieChart>
-                      <Pie data={accumulationPieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
+                      <Pie isAnimationActive={false} data={accumulationPieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
                         outerRadius={100} innerRadius={45}
                         label={({percent}) => percent > 0.03 ? `${(percent * 100).toFixed(0)}%` : ''}>
                         {accumulationPieData.map((entry, i) => <Cell key={i} fill={entry.color}/>)}
@@ -2378,21 +1895,21 @@ export default function WealthGuardTool() {
           <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Years Until Retirement</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Years Until First Retirement</label>
               <input type="number" value={yearsUntilRetirement} disabled
                 className="w-full px-3 py-2 bg-slate-100 border rounded-md"/>
               {isJoint && partnerRetirementAge !== retirementAge && (
-                <p className="text-xs text-slate-500 mt-1">Later of the two retirement ages — full drawdown starts once both have retired.</p>
+                <p className="text-xs text-slate-500 mt-1">Drawdown begins at the first retirement. Working income can offset spending until the second retirement.</p>
               )}
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Retirement Years</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Years to Project After First Retirement</label>
               <input type="number" value={projectionYears}
-                onChange={(e) => setProjectionYears(parseInt(e.target.value) || 30)}
+                onChange={(e) => setProjectionYears(Math.max(1, Math.min(120, parseInt(e.target.value) || 30)))}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Annual Income Required</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Annual Income Required (today's NZD)</label>
               <MoneyInput value={annualIncome} onChange={setAnnualIncome}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
             </div>
@@ -2417,8 +1934,19 @@ export default function WealthGuardTool() {
                 <div><strong>KiwiSaver contributions:</strong> ${Math.round(annualKsTotal).toLocaleString()}/yr</div>
               )}
               <div><strong>Total contributions:</strong> ${Math.round(annualContribution + annualKsTotal).toLocaleString()}/yr</div>
-              <div className="text-xs text-slate-500 mt-1 italic">All contributions stop at retirement.</div>
+              <div className="text-xs text-slate-500 mt-1 italic">Regular contributions stop at first retirement; KiwiSaver stops at each person's retirement.</div>
             </div>
+          </div>
+
+          <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+            <h3 className="font-semibold text-slate-800 mb-2">Income While One Person Is Still Working</h3>
+            <p className="text-xs text-slate-600 mb-3">Enter annual take-home income available for household spending, after tax and KiwiSaver deductions, in today's NZD. This is separate from gross salary used to calculate KiwiSaver contributions. It offsets the household income target until that person's retirement date. Leave at zero to model the full gap from investments and NZ Super.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 no-print">
+              <div><label className="block text-sm mb-1">Client Net Working Income</label><MoneyInput value={clientWorkingIncome} onChange={setClientWorkingIncome} className="w-full p-2 border rounded"/></div>
+              {isJoint && <div><label className="block text-sm mb-1">Partner Net Working Income</label><MoneyInput value={partnerWorkingIncome} onChange={setPartnerWorkingIncome} className="w-full p-2 border rounded"/></div>}
+            </div>
+            <p className="text-sm mt-3">First retirement: year {yearsUntilRetirement} (client age {clientAge + yearsUntilRetirement}{isJoint && ` / partner age ${partnerAge + yearsUntilRetirement}`}). {isJoint && <>Both retired: year {yearsUntilFullRetirement} (ages {clientAge + yearsUntilFullRetirement} / {partnerAge + yearsUntilFullRetirement}).</>}</p>
+            <p className="text-xs mt-2">Working-income assumptions: client ${Math.round(clientWorkingIncome).toLocaleString()}/yr{isJoint && `; partner $${Math.round(partnerWorkingIncome).toLocaleString()}/yr`}. Income and care event years are measured from first retirement. The horizon ends at client age {clientAge+yearsUntilRetirement+projectionYears}{isJoint && ` / partner age ${partnerAge+yearsUntilRetirement+projectionYears}` }.</p>
           </div>
 
           {/* KiwiSaver contributions (percentage-based, from salary) */}
@@ -2426,7 +1954,7 @@ export default function WealthGuardTool() {
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="font-semibold text-slate-800">KiwiSaver Contributions</h3>
-                <p className="text-xs text-slate-500">Percentage of salary, employee + employer matched. Added to accumulation only.</p>
+                <p className="text-xs text-slate-500">Employee contributions plus employer contributions after ESCT. Rates stay fixed until each person retires; update for future rate changes. Government contributions are excluded. Auto ESCT estimates from current salary plus employer contributions; confirm the payroll rate.</p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-sm">
                 <input type="checkbox" checked={ksEnabled} onChange={(e) => setKsEnabled(e.target.checked)}/>
@@ -2450,7 +1978,7 @@ export default function WealthGuardTool() {
                         <label className="block text-xs text-slate-600 mb-1">Employee %</label>
                         <div className="flex items-center gap-1">
                           <input type="number" step="0.5" min="0" max="100" value={clientKsRate}
-                            onChange={(e) => setClientKsRate(parseFloat(e.target.value) || 0)}
+                            onChange={(e) => setClientKsRate(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
                             className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
                           <span className="text-xs">%</span>
                         </div>
@@ -2459,7 +1987,7 @@ export default function WealthGuardTool() {
                         <label className="block text-xs text-slate-600 mb-1">Employer %</label>
                         <div className="flex items-center gap-1">
                           <input type="number" step="0.5" min="0" max="100" value={clientKsEmployer}
-                            onChange={(e) => setClientKsEmployer(parseFloat(e.target.value) || 0)}
+                            onChange={(e) => setClientKsEmployer(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
                             className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
                           <span className="text-xs">%</span>
                         </div>
@@ -2467,6 +1995,12 @@ export default function WealthGuardTool() {
                     </div>
                     <div className="text-xs text-slate-600 bg-white rounded px-2 py-1 border border-slate-200">
                       Contributing <strong>${Math.round(annualKsClient).toLocaleString()}/yr</strong> total
+                      <label className="block text-xs mt-2">ESCT rate
+                        <select aria-label="client ESCT rate" value={clientEsctRate ?? 'auto'} onChange={e => setClientEsctRate(e.target.value === 'auto' ? null : Number(e.target.value))} className="w-full border rounded p-1 mt-1">
+                          <option value="auto">Estimate from salary</option>
+                          {[0,10.5,17.5,30,33,39].map(rate => <option key={rate} value={rate}>{rate}%</option>)}
+                        </select>
+                      </label>
                     </div>
                   </div>
                 </div>
@@ -2486,7 +2020,7 @@ export default function WealthGuardTool() {
                           <label className="block text-xs text-slate-600 mb-1">Employee %</label>
                           <div className="flex items-center gap-1">
                             <input type="number" step="0.5" min="0" max="100" value={partnerKsRate}
-                              onChange={(e) => setPartnerKsRate(parseFloat(e.target.value) || 0)}
+                              onChange={(e) => setPartnerKsRate(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
                               className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
                             <span className="text-xs">%</span>
                           </div>
@@ -2495,7 +2029,7 @@ export default function WealthGuardTool() {
                           <label className="block text-xs text-slate-600 mb-1">Employer %</label>
                           <div className="flex items-center gap-1">
                             <input type="number" step="0.5" min="0" max="100" value={partnerKsEmployer}
-                              onChange={(e) => setPartnerKsEmployer(parseFloat(e.target.value) || 0)}
+                              onChange={(e) => setPartnerKsEmployer(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
                               className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
                             <span className="text-xs">%</span>
                           </div>
@@ -2503,6 +2037,12 @@ export default function WealthGuardTool() {
                       </div>
                       <div className="text-xs text-slate-600 bg-white rounded px-2 py-1 border border-slate-200">
                         Contributing <strong>${Math.round(annualKsPartner).toLocaleString()}/yr</strong> total
+                      <label className="block text-xs mt-2">ESCT rate
+                        <select aria-label="partner ESCT rate" value={partnerEsctRate ?? 'auto'} onChange={e => setPartnerEsctRate(e.target.value === 'auto' ? null : Number(e.target.value))} className="w-full border rounded p-1 mt-1">
+                          <option value="auto">Estimate from salary</option>
+                          {[0,10.5,17.5,30,33,39].map(rate => <option key={rate} value={rate}>{rate}%</option>)}
+                        </select>
+                      </label>
                       </div>
                     </div>
                   </div>
@@ -2530,14 +2070,14 @@ export default function WealthGuardTool() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">After (years into retirement)</label>
                   <input type="number" min="0" max={projectionYears} step="1" value={incomeReductionAfterYears}
-                    onChange={(e) => setIncomeReductionAfterYears(parseInt(e.target.value) || 15)}
+                    onChange={(e) => setIncomeReductionAfterYears(Math.max(0, Math.min(120, parseInt(e.target.value) || 15)))}
                     className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Reduce income by</label>
                   <div className="flex items-center gap-2">
                     <input type="number" min="0" max="100" step="5" value={incomeReductionPercent}
-                      onChange={(e) => setIncomeReductionPercent(parseInt(e.target.value) || 20)}
+                      onChange={(e) => setIncomeReductionPercent(Math.max(0, Math.min(120, parseInt(e.target.value) || 20)))}
                       className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
                     <span className="text-sm">%</span>
                   </div>
@@ -2575,7 +2115,7 @@ export default function WealthGuardTool() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">From (years into retirement)</label>
                   <input type="number" min="0" max={projectionYears} step="1" value={agedCareStartYear}
-                    onChange={(e) => setAgedCareStartYear(parseInt(e.target.value) || 0)}
+                    onChange={(e) => setAgedCareStartYear(Math.max(0, Math.min(120, parseInt(e.target.value) || 0)))}
                     className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
                 </div>
                 <div>
@@ -2586,7 +2126,7 @@ export default function WealthGuardTool() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Duration (years)</label>
                   <input type="number" min="0" step="1" value={agedCareDurationYears}
-                    onChange={(e) => setAgedCareDurationYears(parseInt(e.target.value) || 0)}
+                    onChange={(e) => setAgedCareDurationYears(Math.max(0, Math.min(120, parseInt(e.target.value) || 0)))}
                     placeholder="0 = ongoing"
                     className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
                   <p className="text-xs text-slate-400 mt-1">0 = ongoing for the rest of the plan</p>
@@ -2723,8 +2263,8 @@ export default function WealthGuardTool() {
                         <div className="text-xs uppercase tracking-wider text-slate-500">Maximum giftable</div>
                         <div className="text-3xl font-bold mt-1 text-green-700">${Math.round(giftingResult.maxGifting).toLocaleString()}</div>
                         <div className="text-xs text-slate-600 mt-1">
-                          ${giftingResult.nearTotal.toLocaleString()} over the next {giftingResult.nearYears} yr{giftingResult.nearYears !== 1 ? 's' : ''} (${giftingResult.nearAnnualLimit.toLocaleString()}/yr)
-                          {giftingResult.farYears > 0 && <> + ${giftingResult.farTotal.toLocaleString()} over the following {giftingResult.farYears} yr{giftingResult.farYears !== 1 ? 's' : ''} (${giftingResult.farAnnualLimit.toLocaleString()}/yr)</>}
+                          ${giftingResult.nearTotal.toLocaleString()} over the final {giftingResult.nearYears} yr{giftingResult.nearYears !== 1 ? 's' : ''} (${giftingResult.nearAnnualLimit.toLocaleString()}/yr)
+                          {giftingResult.farYears > 0 && <> + ${giftingResult.farTotal.toLocaleString()} over the earlier {giftingResult.farYears} yr{giftingResult.farYears !== 1 ? 's' : ''} (${giftingResult.farAnnualLimit.toLocaleString()}/yr)</>}
                           {giftingAlreadyGifted > 0 && <> − ${Math.round(giftingAlreadyGifted).toLocaleString()} already gifted</>}
                         </div>
                       </div>
@@ -2736,7 +2276,7 @@ export default function WealthGuardTool() {
                       <div className={`rounded-lg p-4 border-l-4 ${giftingResult.meetsThresholdAfterGifting ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500'}`}>
                         <div className="text-xs uppercase tracking-wider text-slate-500">Meets asset test?</div>
                         <div className={`text-lg font-bold mt-1 ${giftingResult.meetsThresholdAfterGifting ? 'text-green-700' : 'text-red-700'}`}>
-                          {giftingResult.meetsThresholdAfterGifting ? '✓ Yes, after gifting' : '✗ Not even after max gifting'}
+                          {giftingResult.meetsThresholdAfterGifting ? 'Below the modelled asset threshold' : 'Above the modelled asset threshold'}
                         </div>
                         {!giftingResult.meetsThresholdNow && !giftingResult.meetsThresholdAfterGifting && (
                           <div className="text-xs text-red-600 mt-1">
@@ -2744,7 +2284,7 @@ export default function WealthGuardTool() {
                           </div>
                         )}
                         {giftingResult.meetsThresholdNow && (
-                          <div className="text-xs text-green-600 mt-1">Already under the threshold — gifting isn't needed to qualify.</div>
+                          <div className="text-xs text-green-600 mt-1">Already below the modelled asset threshold; full subsidy eligibility is assessed separately.</div>
                         )}
                       </div>
                     </div>
@@ -2821,7 +2361,7 @@ export default function WealthGuardTool() {
                         ${Math.round(wealthTransferResult.finalWithGifting).toLocaleString()}
                       </div>
                       <div className="text-xs text-slate-600 mt-1">
-                        {wealthTransferResult.meetsThresholdWithGifting ? '✓ Meets the asset test' : '✗ Still over the threshold'} at application
+                        {wealthTransferResult.meetsThresholdWithGifting ? 'Below modelled asset threshold' : '✗ Still over the threshold'} at application
                       </div>
                     </div>
                     <div className={`rounded-lg p-4 border-l-4 ${wealthTransferResult.meetsThresholdNoGifting ? 'bg-green-50 border-green-500' : 'bg-slate-50 border-slate-400'}`}>
@@ -2843,8 +2383,8 @@ export default function WealthGuardTool() {
                           <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
                           <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={(y) => `Year ${y}`}/>
                           <Legend/>
-                          <Line type="monotone" dataKey="poolNoGifting" name="Without gifting" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
-                          <Line type="monotone" dataKey="poolWithGifting" name="With gifting strategy" stroke="#16a34a" strokeWidth={2.5} dot={false}/>
+                          <Line isAnimationActive={false} type="monotone" dataKey="poolNoGifting" name="Without gifting" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
+                          <Line isAnimationActive={false} type="monotone" dataKey="poolWithGifting" name="With gifting strategy" stroke="#16a34a" strokeWidth={2.5} dot={false}/>
                         </LineChart>
                       </ResponsiveContainer>
                       <p className="text-xs text-slate-500 mt-2">
@@ -2896,7 +2436,7 @@ export default function WealthGuardTool() {
               </div>
             </div>
             <div className="max-w-xs">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Target amount remaining at end of plan</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Target remaining at end of plan (future NZD)</label>
               <MoneyInput value={legacyTarget} onChange={setLegacyTarget}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
               {legacyTarget > 0 && (
@@ -2996,6 +2536,11 @@ export default function WealthGuardTool() {
             </div>
           </div>
         </div>
+
+        {projectionData.some(d => d.lockedKiwiSaver > 0) && <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-sm">
+          <strong>KiwiSaver access:</strong> At household retirement, ${Math.round(projectionData.find(d => d.year === yearsUntilRetirement)?.lockedKiwiSaver || 0).toLocaleString()} remains locked.
+          The retirement allocation below applies to accessible funds only. The total portfolio chart includes locked KiwiSaver.
+        </div>}
 
         {/* =============== RETIREMENT ALLOCATION + PIE =============== */}
         <div id="sec-allocations" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
@@ -3111,7 +2656,7 @@ export default function WealthGuardTool() {
               {retirementPieData.length > 0 ? (
                 <PrintableChart screenHeight={320} printHeight={300} printWidth={330}>
                   <PieChart>
-                    <Pie data={retirementPieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
+                    <Pie isAnimationActive={false} data={retirementPieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
                       outerRadius={100} innerRadius={45}
                       label={({percent}) => percent > 0.03 ? `${(percent * 100).toFixed(0)}%` : ''}>
                       {retirementPieData.map((entry, i) => <Cell key={i} fill={entry.color}/>)}
@@ -3130,7 +2675,7 @@ export default function WealthGuardTool() {
         {/* =============== RETURNS =============== */}
         <div id="sec-returns" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
           <h2 className="text-xl font-bold mb-1">Expected Returns (%)</h2>
-          <p className="text-xs text-slate-500 mb-4">Figures are net of investment management fees — no separate fee deduction is applied elsewhere in the plan.</p>
+          <p className="text-xs text-slate-500 mb-4">Enter returns after all fund, platform and advice fees and investment tax. No separate deductions are made by the model.</p>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             {[
               {k:'cashSavings', l:'Cash'},
@@ -3187,7 +2732,7 @@ export default function WealthGuardTool() {
           <h2 className="text-xl font-bold mb-3">Maximum Sustainable Income</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <div className="text-xs opacity-80 uppercase tracking-wider">Max sustainable income</div>
+              <div className="text-xs opacity-80 uppercase tracking-wider">Modelled income ceiling</div>
               <div className="text-3xl font-bold mt-1">${Math.round(maxSustainableIncome).toLocaleString()}<span className="text-lg font-normal">/yr</span></div>
               <div className="text-xs opacity-80 mt-1">
                 {legacyTarget > 0
@@ -3203,9 +2748,9 @@ export default function WealthGuardTool() {
             <div>
               <div className="text-xs opacity-80 uppercase tracking-wider">Your target income</div>
               <div className="text-3xl font-bold mt-1">${Math.round(annualIncome).toLocaleString()}<span className="text-lg font-normal">/yr</span></div>
-              <div className={`text-xs mt-1 font-semibold flex items-center gap-1 ${annualIncome <= maxSustainableIncome ? 'text-green-300' : 'text-amber-300'}`}>
-                {annualIncome <= maxSustainableIncome
-                  ? `✓ Sustainable (${((annualIncome / maxSustainableIncome) * 100).toFixed(0)}% of max)`
+              <div className={`text-xs mt-1 font-semibold flex items-center gap-1 ${planFunded ? 'text-green-300' : 'text-amber-300'}`}>
+                {planFunded
+                  ? `✓ Funded under assumptions (${(maxSustainableIncome > 0 ? (annualIncome / maxSustainableIncome) * 100 : 0).toFixed(0)}% of max)`
                   : <><AlertTriangle size={14}/> Exceeds sustainable level</>}
               </div>
             </div>
@@ -3303,7 +2848,7 @@ export default function WealthGuardTool() {
               </div>
               <div>
                 <div className="text-xs text-slate-500 uppercase tracking-wide">First-Year Drawdown</div>
-                <div className="font-semibold text-base mt-0.5">${Math.round(Math.max(0, annualIncome - superAtRetirement)).toLocaleString()}/yr</div>
+                <div className="font-semibold text-base mt-0.5">${Math.round(firstYearDrawdown).toLocaleString()}/yr</div>
               </div>
             </div>
 
@@ -3406,12 +2951,12 @@ export default function WealthGuardTool() {
               )}
               {' '}currently hold <strong>${Math.round(totalPortfolio).toLocaleString()}</strong> across cash, term deposits, KiwiSaver and other investments
               {yearsUntilRetirement > 0 ? (
-                <>, with plans to retire in <strong>{yearsUntilRetirement} year{yearsUntilRetirement !== 1 ? 's' : ''}</strong> at age {retirementAge}.</>
+                <>, with the first retirement in <strong>{yearsUntilRetirement} year{yearsUntilRetirement !== 1 ? 's' : ''}</strong> at client age {clientAge + yearsUntilRetirement}.</>
               ) : (
                 <> and {isJoint ? 'are' : 'is'} already at retirement age.</>
               )}
               {(annualContribution > 0 || annualKsTotal > 0) && yearsUntilRetirement > 0 && (
-                <> Between now and then, contributions of <strong>${Math.round(annualContribution + annualKsTotal).toLocaleString()}/yr</strong> ({annualContribution > 0 && `${'$'}${Math.round(annualContribution).toLocaleString()} regular`}{annualContribution > 0 && annualKsTotal > 0 && <> + </>}{annualKsTotal > 0 && `${'$'}${Math.round(annualKsTotal).toLocaleString()} KiwiSaver`}) will continue to build the portfolio. Contributions stop at retirement.</>
+                <> Between now and then, contributions of <strong>${Math.round(annualContribution + annualKsTotal).toLocaleString()}/yr</strong> ({annualContribution > 0 && `${'$'}${Math.round(annualContribution).toLocaleString()} regular`}{annualContribution > 0 && annualKsTotal > 0 && <> + </>}{annualKsTotal > 0 && `${'$'}${Math.round(annualKsTotal).toLocaleString()} KiwiSaver`}) will continue to build the portfolio. Regular contributions stop at first retirement; KiwiSaver contributions stop at each person’s retirement.</>
               )}
             </p>
 
@@ -3463,8 +3008,8 @@ export default function WealthGuardTool() {
               the portfolio can sustain an annual income of up to <strong>${Math.round(maxSustainableIncome).toLocaleString()}</strong>
               {legacyTarget > 0 ? <> while leaving at least <strong>${Math.round(legacyTarget).toLocaleString()}</strong> for beneficiaries</> : ''}.
               {' '}
-              {annualIncome <= maxSustainableIncome ? (
-                <>The target of ${Math.round(annualIncome).toLocaleString()} sits at <strong>{((annualIncome / maxSustainableIncome) * 100).toFixed(0)}%</strong> of that ceiling — comfortably within what the plan can support.</>
+              {planFunded ? (
+                <>The target of ${Math.round(annualIncome).toLocaleString()} sits at <strong>{(maxSustainableIncome > 0 ? (annualIncome / maxSustainableIncome) * 100 : 0).toFixed(0)}%</strong> of the deterministic ceiling. Market outcomes can differ.</>
               ) : (
                 <><strong className="text-red-700">The target of ${Math.round(annualIncome).toLocaleString()} exceeds the sustainable level</strong> — either the income target will need to come down, or the portfolio needs to grow further before retirement.</>
               )}
@@ -3608,7 +3153,7 @@ export default function WealthGuardTool() {
               <div className="flex items-center gap-2 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">
                 <span className="text-red-700">Shock:</span>
                 <input type="number" step="1" max="0" value={badFirstYearShockPercent}
-                  onChange={(e) => setBadFirstYearShockPercent(parseFloat(e.target.value) || 0)}
+                  onChange={(e) => setBadFirstYearShockPercent(Math.max(-100, Math.min(0, parseFloat(e.target.value) || 0)))}
                   className="w-16 px-2 py-0.5 border border-red-300 rounded text-sm"/>
                 <span className="text-red-700">% to growth buckets</span>
               </div>
@@ -3648,10 +3193,10 @@ export default function WealthGuardTool() {
               <span className="text-slate-400">$0</span>
               <span className={`font-semibold flex items-center gap-1 ${
                 maxSustainableIncome <= 0 ? 'text-slate-500'
-                : annualIncome <= maxSustainableIncome ? 'text-green-600' : 'text-amber-600'}`}>
+                : planFunded ? 'text-green-600' : 'text-amber-600'}`}>
                 {maxSustainableIncome > 0 && (
                   annualIncome <= maxSustainableIncome
-                    ? `✓ ${((annualIncome / maxSustainableIncome) * 100).toFixed(0)}% of max sustainable ($${Math.round(maxSustainableIncome).toLocaleString()})`
+                    ? `✓ ${(maxSustainableIncome > 0 ? (annualIncome / maxSustainableIncome) * 100 : 0).toFixed(0)}% of max sustainable ($${Math.round(maxSustainableIncome).toLocaleString()})`
                     : <><AlertTriangle size={12}/> Exceeds max sustainable (${Math.round(maxSustainableIncome).toLocaleString()})</>
                 )}
               </span>
@@ -3666,12 +3211,13 @@ export default function WealthGuardTool() {
               <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
               <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={ageTooltipLabel}/>
               <Legend wrapperStyle={{paddingTop: '10px'}}/>
-              <Line type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
-              <Line type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Strategic Long Term Growth" stroke="#a855f7" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="lockedKiwiSaver" name="Locked KiwiSaver" stroke="#64748b" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Strategic Long Term Growth" stroke="#a855f7" strokeWidth={2} dot={false}/>
             </LineChart>
           </PrintableChart>
           {yearsUntilRetirement > 0 && (
@@ -3694,9 +3240,10 @@ export default function WealthGuardTool() {
               <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
               <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={ageTooltipLabel}/>
               <Legend wrapperStyle={{paddingTop: '10px'}}/>
-              <Line type="monotone" dataKey="Required Drawdown" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
-              <Line type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
-              <Line type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Net Working Income" stroke="#16a34a" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Required Drawdown" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
             </LineChart>
           </PrintableChart>
           <p className="text-xs mt-3 text-slate-500 no-print">
@@ -3801,10 +3348,10 @@ export default function WealthGuardTool() {
                       <>of {mcResults.numSims.toLocaleString()} runs met the full income need across all {projectionYears} years —
                       ${Math.round(annualIncome).toLocaleString()}/yr for the first {incomeReductionAfterYears},
                       then ${Math.round(annualIncome * (1 - incomeReductionPercent / 100)).toLocaleString()}/yr
-                      (−{incomeReductionPercent}%) thereafter, each rising with inflation</>
+                      (−{incomeReductionPercent}%) thereafter, each rising with inflation, plus scheduled lump sums and the legacy target</>
                     ) : (
                       <>of {mcResults.numSims.toLocaleString()} runs met the full ${Math.round(annualIncome).toLocaleString()}/yr
-                      income need across all {projectionYears} years (rising with inflation)</>
+                      income need across all {projectionYears} years (rising with inflation), all scheduled lump sums and the legacy target</>
                     )}
                   </div>
                 </div>
@@ -3822,8 +3369,8 @@ export default function WealthGuardTool() {
                   <div className="text-4xl font-bold mt-1 text-slate-800">{mcResults.depletionYears.length.toLocaleString()}</div>
                   <div className="text-xs text-slate-600 mt-1">
                     {mcResults.depletionYears.length > 0
-                      ? `Typically depleting around year ${Math.round(mcResults.depletionYears.reduce((a,b)=>a+b,0)/mcResults.depletionYears.length) - yearsUntilRetirement} of retirement`
-                      : 'No runs ran out of money'}
+                      ? `First unmet requirement typically around year ${Math.round(mcResults.depletionYears.reduce((a,b)=>a+b,0)/mcResults.depletionYears.length) - yearsUntilRetirement} of retirement`
+                      : 'All runs met spending and legacy requirements'}
                   </div>
                 </div>
               </div>
@@ -3843,11 +3390,11 @@ export default function WealthGuardTool() {
                       labelFormatter={ageTooltipLabel}
                       formatter={(v, name) => [`$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`, name]}/>
                     {/* Stacked invisible base + bands to create a fan */}
-                    <Area type="monotone" dataKey="base" stackId="1" stroke="none" fill="transparent" name="10th pct" legendType="none"/>
-                    <Area type="monotone" dataKey="band10_25" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.15} name="10–25th pct"/>
-                    <Area type="monotone" dataKey="band25_75" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.28} name="25–75th pct (mid 50%)"/>
-                    <Area type="monotone" dataKey="band75_90" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.15} name="75–90th pct"/>
-                    <Line type="monotone" dataKey="p50" stroke="#1d4ed8" strokeWidth={3} dot={false} name="Median"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="base" stackId="1" stroke="none" fill="transparent" name="10th pct" legendType="none"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="band10_25" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.15} name="10–25th pct"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="band25_75" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.28} name="25–75th pct (mid 50%)"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="band75_90" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.15} name="75–90th pct"/>
+                    <Line isAnimationActive={false} type="monotone" dataKey="p50" stroke="#1d4ed8" strokeWidth={3} dot={false} name="Median"/>
                   </ComposedChart>
                 </PrintableChart>
                 <p className="text-xs text-slate-500 mt-2 chart-caption">
@@ -3859,14 +3406,14 @@ export default function WealthGuardTool() {
               {/* Depletion histogram */}
               {mcResults.depletionHisto.length > 0 && (
                 <div className="avoid-break mc-histogram">
-                  <h3 className="font-semibold text-slate-800 mb-2">When Money Ran Out (in the runs that fell short)</h3>
+                  <h3 className="font-semibold text-slate-800 mb-2">First Unfunded Requirement (including legacy target)</h3>
                   <PrintableChart screenHeight={220} printHeight={170}>
                     <BarChart data={mcResults.depletionHisto} margin={{left:40, right:20, top:5, bottom:5}}>
                       <CartesianGrid strokeDasharray="3 3"/>
                       <XAxis dataKey="label" tick={{fontSize: 12}}/>
                       <YAxis allowDecimals={false} width={50}/>
                       <Tooltip formatter={(v) => [`${v} runs`, 'Count']} labelFormatter={(l) => `Retirement years ${l}`}/>
-                      <Bar dataKey="count" fill="#dc2626" radius={[4,4,0,0]}/>
+                      <Bar isAnimationActive={false} dataKey="count" fill="#dc2626" radius={[4,4,0,0]}/>
                     </BarChart>
                   </PrintableChart>
                   <p className="text-xs text-slate-500 mt-2 chart-caption">
@@ -3878,7 +3425,7 @@ export default function WealthGuardTool() {
 
               <div className="text-xs text-slate-400 italic">
                 Monte Carlo results are stochastic — re-running will give slightly different figures. More simulations = steadier numbers.
-                This models market randomness on the growth buckets only; it is not a guarantee and does not constitute financial advice.
+                This models correlated normal annual returns for Income Generator and the growth buckets; it is not a guarantee and does not constitute financial advice.
               </div>
             </div>
           )}
@@ -3888,7 +3435,7 @@ export default function WealthGuardTool() {
         <div className="hidden print:block mt-6 text-xs text-slate-600">
           <p><strong>Prepared by Diligent Wealth Management</strong> • {new Date().toLocaleDateString('en-NZ')}</p>
           <p className="mt-2">CONFIDENTIAL — This document contains projections and should not be considered financial advice.
-          Return assumptions are net of investment management fees.</p>
+          Return assumptions must be net of all fees and investment tax.</p>
         </div>
 
         {/* =============== ABOUT =============== */}
@@ -3897,7 +3444,7 @@ export default function WealthGuardTool() {
           <p className="text-sm text-slate-600 mb-4">
             WealthGuard uses five distinct buckets to maximise growth potential while minimising sequencing risk.
             In retirement, day-to-day spending comes from <strong>Cash Savings</strong>, which is topped up from the
-            <strong> Income Generator</strong> bucket on a quarterly basis. The Income Generator bucket is in turn
+            <strong> Income Generator</strong> bucket (represented by annual cash flows in this model). The Income Generator bucket is in turn
             replenished annually from <strong>Steady Growth</strong> and <strong>Strategic Long Term Growth</strong>, letting
             long-term assets continue compounding. <strong>Capital Preservation</strong> (Term Deposits) sits aside
             as a safety net, only drawn on in emergencies or during periods where the invested buckets are in
