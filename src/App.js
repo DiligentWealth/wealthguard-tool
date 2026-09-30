@@ -63,6 +63,32 @@ const ACCUM_BUCKET_META = [
   { key: 'growthPortfolio',   label: 'Strategic Long Term Growth', color: '#a855f7' }
 ];
 
+// Largest-remainder rounding to 1 decimal place across a set of raw percentages.
+// Guarantees the rounded values sum to exactly the rounded-to-1dp total of the raw
+// values — so when the raw values genuinely sum to 100 (every dollar assigned to a
+// bucket), the rounded outputs sum to exactly 100.0 with no compounding rounding
+// drift; when they sum to less (some money not yet assigned to a bucket), the
+// rounded outputs honestly sum to that same lower total instead of being forced to
+// 100 — which is what lets the existing "total ≠ 100%" warning correctly flag
+// unassigned money rather than silently hiding it in one bucket.
+function largestRemainderRound(rawValues, decimals = 1) {
+  const scale = Math.pow(10, decimals);
+  const keys = Object.keys(rawValues);
+  const scaled = keys.map((k) => rawValues[k] * scale);
+  const total = scaled.reduce((a, b) => a + b, 0);
+  const targetInt = Math.round(total);
+  const floors = scaled.map((v) => Math.floor(v));
+  let remainder = targetInt - floors.reduce((a, b) => a + b, 0);
+  const fracOrder = scaled
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac);
+  const result = [...floors];
+  for (let n = 0; n < remainder && n < fracOrder.length; n++) result[fracOrder[n].i] += 1;
+  const out = {};
+  keys.forEach((k, i) => { out[k] = result[i] / scale; });
+  return out;
+}
+
 // =============================================================================
 // MONEY INPUT — formatted $ with thousand separators
 // =============================================================================
@@ -106,6 +132,18 @@ function MoneyInput({ value, onChange, className = '', placeholder = '', ...rest
       className={className}
       {...rest}
     />
+  );
+}
+
+// Small dropdown for assigning one holding to a bucket. `options` is one of
+// ACCUM_BUCKET_META / BUCKET_META depending on the current phase.
+function BucketSelect({ value, onChange, options }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}
+      className="w-full px-2 py-1 mt-1 border border-slate-300 rounded text-xs text-slate-600">
+      <option value="">— Assign to bucket —</option>
+      {options.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+    </select>
   );
 }
 
@@ -158,7 +196,11 @@ function runSimulation(params) {
     totalPortfolio, allocations: rawAllocations, accumulationAllocations: rawAccumulationAllocations, returns,
     accumulationReturns,
     yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
-    annualKsTotal = 0,
+    // Per-person retirement timing: each person's KiwiSaver stops at THEIR OWN
+    // retirement year, not the household's (later-of-two) year. Defaulting both to
+    // yearsUntilRetirement keeps old callers (single-date scenarios) unaffected.
+    yearsUntilClientRetirement = yearsUntilRetirement, yearsUntilPartnerRetirement = yearsUntilRetirement,
+    annualKsClient = 0, annualKsPartner = 0,
     incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
     agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
     badFirstYearEnabled = false, badFirstYearShockPercent = -20,
@@ -336,11 +378,15 @@ function runSimulation(params) {
         balanced += annualContribution * (accumulationAllocations.balancedPortfolio / 100);
         growth   += annualContribution * (accumulationAllocations.growthPortfolio / 100);
       }
-      // KiwiSaver contributions (also stop at retirement — no salary income to contribute from)
-      if (annualKsTotal > 0) {
-        cash     += annualKsTotal * (accumulationAllocations.cashSavings / 100);
-        balanced += annualKsTotal * (accumulationAllocations.balancedPortfolio / 100);
-        growth   += annualKsTotal * (accumulationAllocations.growthPortfolio / 100);
+      // KiwiSaver contributions — each person's own contribution stops at THEIR OWN
+      // retirement year (no salary once they've personally retired), not the
+      // household's later-of-two year.
+      const ksThisYear = (year < yearsUntilClientRetirement ? annualKsClient : 0)
+        + (year < yearsUntilPartnerRetirement ? annualKsPartner : 0);
+      if (ksThisYear > 0) {
+        cash     += ksThisYear * (accumulationAllocations.cashSavings / 100);
+        balanced += ksThisYear * (accumulationAllocations.balancedPortfolio / 100);
+        growth   += ksThisYear * (accumulationAllocations.growthPortfolio / 100);
       }
       for (const ls of accumulationLumpSums) {
         if (ls.year === year && ls.amount) {
@@ -463,7 +509,8 @@ function runMonteCarloPath(params) {
     totalPortfolio, allocations: rawAllocations, accumulationAllocations: rawAccumulationAllocations, returns, volatilities,
     accumulationReturns, mcAccumulationEnabled = false,
     yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
-    annualKsTotal = 0,
+    yearsUntilClientRetirement = yearsUntilRetirement, yearsUntilPartnerRetirement = yearsUntilRetirement,
+    annualKsClient = 0, annualKsPartner = 0,
     incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
     agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
     accumulationLumpSums = [], retirementLumpSums = [],
@@ -569,10 +616,12 @@ function runMonteCarloPath(params) {
         balanced += annualContribution * (accumulationAllocations.balancedPortfolio / 100);
         growth += annualContribution * (accumulationAllocations.growthPortfolio / 100);
       }
-      if (annualKsTotal > 0) {
-        cash += annualKsTotal * (accumulationAllocations.cashSavings / 100);
-        balanced += annualKsTotal * (accumulationAllocations.balancedPortfolio / 100);
-        growth += annualKsTotal * (accumulationAllocations.growthPortfolio / 100);
+      const ksThisYear = (year < yearsUntilClientRetirement ? annualKsClient : 0)
+        + (year < yearsUntilPartnerRetirement ? annualKsPartner : 0);
+      if (ksThisYear > 0) {
+        cash += ksThisYear * (accumulationAllocations.cashSavings / 100);
+        balanced += ksThisYear * (accumulationAllocations.balancedPortfolio / 100);
+        growth += ksThisYear * (accumulationAllocations.growthPortfolio / 100);
       }
       for (const ls of accumulationLumpSums) {
         if (ls.year === year && ls.amount) {
@@ -700,7 +749,18 @@ function computeScenarioSummary(data) {
   const partnerAge = d.partnerAge ?? 60;
   const retirementAge = d.retirementAge ?? 65;
   const isJoint = (d.partnerName || '').trim() !== '';
-  const yearsUntilRetirement = Math.max(0, retirementAge - clientAge);
+  const yearsUntilClientRetirement = Math.max(0, retirementAge - clientAge);
+  // Back-compat: scenarios saved before per-person retirement ages existed have no
+  // partnerRetirementAge field. Falling back to the client's retirement AGE (e.g. 65)
+  // would silently change the household timeline for any couple with different current
+  // ages. Instead, fall back to whatever age the partner will BE when the client
+  // retires — that guarantees yearsUntilPartnerRetirement equals yearsUntilClientRetirement
+  // in the fallback case, so old scenarios reproduce their original numbers exactly.
+  const partnerRetirementAge = d.partnerRetirementAge ?? (partnerAge + yearsUntilClientRetirement);
+  const yearsUntilPartnerRetirement = isJoint ? Math.max(0, partnerRetirementAge - partnerAge) : 0;
+  const yearsUntilRetirement = isJoint
+    ? Math.max(yearsUntilClientRetirement, yearsUntilPartnerRetirement)
+    : yearsUntilClientRetirement;
   const livingSituation = d.livingSituation ?? 'single_shared';
   const useGrossSuper = d.useGrossSuper ?? false;
   const inflateSuper = d.inflateSuper ?? true;
@@ -723,7 +783,6 @@ function computeScenarioSummary(data) {
   const annualKsPartner = ksEnabled && isJoint
     ? (d.partnerSalary || 0) * ((d.partnerKsRate || 0) / 100) + (d.partnerSalary || 0) * ((d.partnerKsEmployer || 0) / 100)
     : 0;
-  const annualKsTotal = annualKsClient + annualKsPartner;
 
   const clientSuperIneligible = d.clientSuperIneligible ?? false;
   const partnerSuperIneligible = d.partnerSuperIneligible ?? false;
@@ -756,7 +815,8 @@ function computeScenarioSummary(data) {
 
   const simParams = {
     totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns,
-    yearsUntilRetirement, projectionYears, annualContribution, annualKsTotal,
+    yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+    projectionYears, annualContribution, annualKsClient, annualKsPartner,
     incomeReductionEnabled: d.incomeReductionEnabled ?? false,
     incomeReductionAfterYears: d.incomeReductionAfterYears ?? 15,
     incomeReductionPercent: d.incomeReductionPercent ?? 20,
@@ -805,6 +865,7 @@ export default function WealthGuardTool() {
   const [clientAge, setClientAge]         = useState(60);
   const [partnerAge, setPartnerAge]       = useState(60);
   const [retirementAge, setRetirementAge] = useState(65);
+  const [partnerRetirementAge, setPartnerRetirementAge] = useState(65);
   const [livingSituation, setLivingSituation] = useState('single_shared');
 
   // --- Super settings ---
@@ -818,12 +879,16 @@ export default function WealthGuardTool() {
   // --- Current investments ---
   // Start empty so a fresh session has a $0 portfolio until the adviser enters figures.
   // ids 1 & 2 are the (client / partner) KiwiSaver fields and are always present.
+  // `bucket` (added per item) lets the adviser assign each holding to a bucket so the
+  // allocation percentages can be worked out automatically from real dollar amounts.
   const [currentInvestments, setCurrentInvestments] = useState([
-    { id: 1, label: '', amount: 0 },
-    { id: 2, label: '', amount: 0 }
+    { id: 1, label: '', amount: 0, bucket: '' },
+    { id: 2, label: '', amount: 0, bucket: '' }
   ]);
   const [cash, setCash]                 = useState(0);
   const [termDeposits, setTermDeposits] = useState(0);
+  const [cashBucket, setCashBucket] = useState('');
+  const [termDepositsBucket, setTermDepositsBucket] = useState('');
 
   // --- Planning ---
   const [projectionYears, setProjectionYears] = useState(30);
@@ -870,6 +935,15 @@ export default function WealthGuardTool() {
     coupleInclHome: 300811,
     coupleExclHome: 164731
   });
+
+  // --- Wealth transfer scenario (year-by-year gifting schedule + projection) ---
+  // Extends the gifting calculator above from a single "maximum giftable" ceiling into
+  // an actual multi-year schedule, projecting the giftable asset pool forward with
+  // growth so the adviser can show a client the concrete plan and its outcome.
+  const [wealthTransferEnabled, setWealthTransferEnabled] = useState(false);
+  const [wealthTransferGrowthRate, setWealthTransferGrowthRate] = useState(5.0);
+  const [wealthTransferStrategy, setWealthTransferStrategy] = useState('max'); // 'max' | 'custom'
+  const [wealthTransferCustomAnnual, setWealthTransferCustomAnnual] = useState(0);
 
   // --- Bad first year stress test (deterministic sequence-of-returns demonstration) ---
   const [badFirstYearEnabled, setBadFirstYearEnabled] = useState(false);
@@ -946,7 +1020,15 @@ export default function WealthGuardTool() {
 
   // --- Derived values ---
   const isJoint = partnerName.trim() !== '';
-  const yearsUntilRetirement = Math.max(0, retirementAge - clientAge);
+  // Each person's own years-until-retirement — drives when THEIR contributions and
+  // KiwiSaver stop. The household figure (used for bucket reallocation and when full
+  // portfolio drawdown begins) is the LATER of the two: while one partner still works,
+  // their income covers living costs and the portfolio isn't yet relied on for income.
+  const yearsUntilClientRetirement = Math.max(0, retirementAge - clientAge);
+  const yearsUntilPartnerRetirement = isJoint ? Math.max(0, partnerRetirementAge - partnerAge) : 0;
+  const yearsUntilRetirement = isJoint
+    ? Math.max(yearsUntilClientRetirement, yearsUntilPartnerRetirement)
+    : yearsUntilClientRetirement;
 
   // --- Quick-nav sidebar (screen only) ---
   const [activeSection, setActiveSection] = useState('sec-client');
@@ -975,6 +1057,45 @@ export default function WealthGuardTool() {
     contributionFrequency === 'fortnightly' ? contributionAmount * 26 :
     contributionFrequency === 'monthly'     ? contributionAmount * 12 :
     contributionAmount;
+
+  // Auto-calculate the allocation percentages from each holding's assigned bucket.
+  // Whenever a dollar amount or bucket assignment changes, this recomputes and
+  // overwrites the relevant allocation percentages — but the percentage fields
+  // themselves stay ordinary editable inputs the rest of the time: hand-typing a
+  // percentage doesn't get overwritten until a bucket assignment or amount changes
+  // again elsewhere. If nothing has been assigned to any bucket yet, this leaves
+  // existing percentages untouched (so older scenarios with no bucket data are
+  // unaffected until the adviser starts assigning buckets).
+  useEffect(() => {
+    const isAccum = yearsUntilRetirement > 0;
+    const metaKeys = isAccum
+      ? ['cashSavings', 'balancedPortfolio', 'growthPortfolio']
+      : ['cashSavings', 'termDeposit', 'incomePortfolio', 'balancedPortfolio', 'growthPortfolio'];
+
+    const sums = Object.fromEntries(metaKeys.map((k) => [k, 0]));
+    if (cashBucket && Object.prototype.hasOwnProperty.call(sums, cashBucket)) sums[cashBucket] += cash;
+    if (termDepositsBucket && Object.prototype.hasOwnProperty.call(sums, termDepositsBucket)) sums[termDepositsBucket] += termDeposits;
+    currentInvestments.forEach((inv) => {
+      if (inv.bucket && Object.prototype.hasOwnProperty.call(sums, inv.bucket)) sums[inv.bucket] += (inv.amount || 0);
+    });
+
+    const assignedTotal = Object.values(sums).reduce((a, b) => a + b, 0);
+    if (assignedTotal <= 0 || totalPortfolio <= 0) return; // nothing assigned yet — leave existing % as-is
+
+    const rawPct = Object.fromEntries(metaKeys.map((k) => [k, (sums[k] / totalPortfolio) * 100]));
+    const rounded = largestRemainderRound(rawPct);
+
+    if (isAccum) setAccumulationAllocations(rounded);
+    else setAllocations(rounded);
+  }, [cash, termDeposits, cashBucket, termDepositsBucket, currentInvestments, yearsUntilRetirement, totalPortfolio]);
+
+  // Which bucket options to offer right now, and how much has actually been assigned
+  // to one — both used by the Current Investments card above.
+  const currentBucketOptions = yearsUntilRetirement > 0 ? ACCUM_BUCKET_META : BUCKET_META;
+  const investmentBucketAssignedTotal =
+    (cashBucket ? cash : 0) +
+    (termDepositsBucket ? termDeposits : 0) +
+    currentInvestments.reduce((s, i) => s + (i.bucket ? (i.amount || 0) : 0), 0);
 
   // --- Gifting calculator (Residential Care Subsidy asset-test) ---
   // MSD allows limited gifting without it being treated as "deprivation of assets" and
@@ -1017,6 +1138,57 @@ export default function WealthGuardTool() {
   }, [giftingYearsUntilCare, yearsUntilRetirement, agedCareEnabled, agedCareStartYear, isJoint,
       giftingNearLimitAnnual, giftingBothApplyingTogether, giftingFarLimitHousehold, giftingAlreadyGifted,
       giftingAssetsOverride, totalPortfolio, giftingThresholdCategory, giftingThresholds]);
+
+  // Wealth transfer scenario: projects the giftable asset pool year-by-year, applying
+  // growth and then that year's allowable gift, using the SAME years-until-care, near/
+  // far limits and threshold already configured in the gifting calculator above. Also
+  // computes a "no gifting" baseline for the same pool, so the value of the strategy is
+  // visible as a direct comparison rather than just a single ceiling figure.
+  const wealthTransferResult = useMemo(() => {
+    const { yearsUntilCare, farYears, nearAnnualLimit, farAnnualLimit, assessableAssets, threshold } = giftingResult;
+    const growth = wealthTransferGrowthRate / 100;
+    const schedule = [];
+    let poolWithGifting = assessableAssets;
+    let poolNoGifting = assessableAssets;
+    let cumulativeGifted = 0;
+
+    for (let year = 0; year < yearsUntilCare; year++) {
+      poolWithGifting *= (1 + growth);
+      poolNoGifting *= (1 + growth);
+      // The near period is the LAST years before application (counting backward from
+      // the application date), i.e. years farYears..yearsUntilCare-1 on this 0-indexed
+      // from-today timeline — everything before that is the far period.
+      const inNearPeriod = year >= farYears;
+      const periodLimit = inNearPeriod ? nearAnnualLimit : farAnnualLimit;
+      const desiredGift = wealthTransferStrategy === 'custom' ? Math.max(0, wealthTransferCustomAnnual) : periodLimit;
+      // Gifting beyond the legal limit for the period defeats the purpose (the excess
+      // gets added back), so the amount is capped at whichever applies that year —
+      // and can never exceed what's actually left in the pool.
+      const giftThisYear = Math.max(0, Math.min(desiredGift, periodLimit, poolWithGifting));
+      poolWithGifting = Math.max(0, poolWithGifting - giftThisYear);
+      cumulativeGifted += giftThisYear;
+      schedule.push({
+        year,
+        period: inNearPeriod ? 'Near (last 5 yrs)' : 'Far (5+ yrs out)',
+        periodLimit: Math.round(periodLimit),
+        giftThisYear: Math.round(giftThisYear),
+        poolWithGifting: Math.round(poolWithGifting),
+        poolNoGifting: Math.round(poolNoGifting),
+        cumulativeGifted: Math.round(cumulativeGifted)
+      });
+    }
+
+    return {
+      schedule,
+      finalWithGifting: poolWithGifting,
+      finalNoGifting: poolNoGifting,
+      totalGifted: cumulativeGifted,
+      threshold,
+      yearsUntilCare,
+      meetsThresholdWithGifting: poolWithGifting <= threshold,
+      meetsThresholdNoGifting: poolNoGifting <= threshold
+    };
+  }, [giftingResult, wealthTransferGrowthRate, wealthTransferStrategy, wealthTransferCustomAnnual]);
 
   // Annual KiwiSaver contributions (employee + employer matched, for client and partner)
   const annualKsClient = ksEnabled
@@ -1083,8 +1255,9 @@ export default function WealthGuardTool() {
   const simulationParams = useMemo(() => ({
     totalPortfolio, allocations, accumulationAllocations, returns,
     accumulationReturns,
-    yearsUntilRetirement, projectionYears, annualContribution,
-    annualKsTotal,
+    yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+    projectionYears, annualContribution,
+    annualKsClient, annualKsPartner,
     incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
     agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
     badFirstYearEnabled, badFirstYearShockPercent,
@@ -1092,8 +1265,9 @@ export default function WealthGuardTool() {
     cashMonths: recSettings.cashMonths
   }), [totalPortfolio, allocations, accumulationAllocations, returns,
       accumulationReturns,
-      yearsUntilRetirement, projectionYears, annualContribution,
-      annualKsTotal,
+      yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+      projectionYears, annualContribution,
+      annualKsClient, annualKsPartner,
       incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
       agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
       badFirstYearEnabled, badFirstYearShockPercent,
@@ -1172,7 +1346,7 @@ export default function WealthGuardTool() {
   ) : 0;
 
   // --- Actions ---
-  const addInvestment = () => setCurrentInvestments([...currentInvestments, { id: Date.now(), label: '', amount: 0 }]);
+  const addInvestment = () => setCurrentInvestments([...currentInvestments, { id: Date.now(), label: '', amount: 0, bucket: '' }]);
   const removeInvestment = (id) => { if (id > 2) setCurrentInvestments(currentInvestments.filter(i => i.id !== id)); };
   const updateInvestment = (id, field, value) => setCurrentInvestments(currentInvestments.map(i =>
     i.id === id ? { ...i, [field]: field === 'amount' ? (parseFloat(value) || 0) : value } : i));
@@ -1198,7 +1372,8 @@ export default function WealthGuardTool() {
   }, [
     totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns, volatilities,
     annualIncome, projectionYears, mcSettings.downYearThreshold, mcAccumulationEnabled,
-    annualContribution, annualKsTotal, incomeReductionEnabled, incomeReductionAfterYears,
+    annualContribution, annualKsClient, annualKsPartner, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+    incomeReductionEnabled, incomeReductionAfterYears,
     incomeReductionPercent, agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
     accumulationLumpSums, retirementLumpSums, mcSettings.numSims
   ]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1261,8 +1436,9 @@ export default function WealthGuardTool() {
         const params = {
           totalPortfolio, allocations, accumulationAllocations, returns, volatilities,
           accumulationReturns, mcAccumulationEnabled,
-          yearsUntilRetirement, projectionYears, annualContribution, annualIncome,
-          annualKsTotal,
+          yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
+          projectionYears, annualContribution, annualIncome,
+          annualKsClient, annualKsPartner,
           incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
           agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
           accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
@@ -1298,9 +1474,9 @@ export default function WealthGuardTool() {
 
   // Scenario management
   const snapshot = () => ({
-    clientName, partnerName, clientAge, partnerAge, retirementAge,
+    clientName, partnerName, clientAge, partnerAge, retirementAge, partnerRetirementAge,
     livingSituation, useGrossSuper, inflateSuper, clientSuperIneligible, partnerSuperIneligible,
-    currentInvestments, cash, termDeposits,
+    currentInvestments, cash, termDeposits, cashBucket, termDepositsBucket,
     projectionYears, annualIncome, contributionAmount, contributionFrequency,
     ksEnabled, clientSalary, partnerSalary,
     clientKsRate, clientKsEmployer, partnerKsRate, partnerKsEmployer,
@@ -1318,6 +1494,14 @@ export default function WealthGuardTool() {
     setClientAge(s.clientAge ?? 60);
     setPartnerAge(s.partnerAge ?? 60);
     setRetirementAge(s.retirementAge ?? 65);
+    // Back-compat: older scenarios have no separate partner retirement age. Falling
+    // back to the client's retirement AGE would change the household timeline for any
+    // couple whose current ages differ — instead fall back to whatever age the partner
+    // will BE when the client retires, which reproduces the old single-date household
+    // timeline exactly (see the matching comment in computeScenarioSummary).
+    setPartnerRetirementAge(s.partnerRetirementAge ?? (
+      (s.partnerAge ?? 60) + Math.max(0, (s.retirementAge ?? 65) - (s.clientAge ?? 60))
+    ));
     setLivingSituation(s.livingSituation ?? 'single_shared');
     setUseGrossSuper(s.useGrossSuper ?? false);
     setInflateSuper(s.inflateSuper ?? true);
@@ -1326,6 +1510,8 @@ export default function WealthGuardTool() {
     setCurrentInvestments(s.currentInvestments ?? []);
     setCash(s.cash ?? 0);
     setTermDeposits(s.termDeposits ?? 0);
+    setCashBucket(s.cashBucket ?? '');
+    setTermDepositsBucket(s.termDepositsBucket ?? '');
     setProjectionYears(s.projectionYears ?? 30);
     setAnnualIncome(s.annualIncome ?? 0);
     setContributionAmount(s.contributionAmount ?? 0);
@@ -1922,6 +2108,19 @@ export default function WealthGuardTool() {
                 <span className="hidden print:block">{partnerAge}</span>
               </div>
             )}
+            {isJoint && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Partner Retirement Age</label>
+                <input type="number" value={partnerRetirementAge} onChange={(e) => setPartnerRetirementAge(parseInt(e.target.value) || 65)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-md no-print"/>
+                <span className="hidden print:block">{partnerRetirementAge}</span>
+                {partnerRetirementAge !== retirementAge && (
+                  <p className="text-xs text-slate-500 mt-1 no-print">
+                    Full portfolio drawdown begins once both have retired — year {yearsUntilRetirement} (age {clientAge + yearsUntilRetirement} / {partnerAge + yearsUntilRetirement}).
+                  </p>
+                )}
+              </div>
+            )}
             {!isJoint && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Living Situation</label>
@@ -2014,18 +2213,24 @@ export default function WealthGuardTool() {
 
         {/* =============== CURRENT INVESTMENTS =============== */}
         <div id="sec-investments" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
-          <h2 className="text-xl font-bold text-slate-800 mb-4">Current Investments</h2>
+          <h2 className="text-xl font-bold text-slate-800 mb-1">Current Investments</h2>
+          <p className="text-xs text-slate-500 mb-4">
+            Assign each holding to a bucket and the {yearsUntilRetirement > 0 ? 'Accumulation' : 'Retirement'} Phase Allocation percentages
+            below work themselves out automatically from the dollar amounts — still fully editable afterward if you want to fine-tune them.
+          </p>
           <div className="space-y-4 mb-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Cash</label>
                 <MoneyInput value={cash} onChange={setCash}
                   className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                <BucketSelect value={cashBucket} onChange={setCashBucket} options={currentBucketOptions}/>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Term Deposits</label>
                 <MoneyInput value={termDeposits} onChange={setTermDeposits}
                   className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                <BucketSelect value={termDepositsBucket} onChange={setTermDepositsBucket} options={currentBucketOptions}/>
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2034,6 +2239,8 @@ export default function WealthGuardTool() {
                 <MoneyInput value={currentInvestments.find(i => i.id === 1)?.amount || 0}
                   onChange={(v) => updateInvestment(1, 'amount', v)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                <BucketSelect value={currentInvestments.find(i => i.id === 1)?.bucket || ''}
+                  onChange={(v) => updateInvestment(1, 'bucket', v)} options={currentBucketOptions}/>
               </div>
               {isJoint && (
                 <div>
@@ -2041,6 +2248,8 @@ export default function WealthGuardTool() {
                   <MoneyInput value={currentInvestments.find(i => i.id === 2)?.amount || 0}
                     onChange={(v) => updateInvestment(2, 'amount', v)}
                     className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                  <BucketSelect value={currentInvestments.find(i => i.id === 2)?.bucket || ''}
+                    onChange={(v) => updateInvestment(2, 'bucket', v)} options={currentBucketOptions}/>
                 </div>
               )}
             </div>
@@ -2048,11 +2257,14 @@ export default function WealthGuardTool() {
               <div key={inv.id} className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <input type="text" value={inv.label} onChange={(e) => updateInvestment(inv.id, 'label', e.target.value)}
                   placeholder="Investment name" className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
-                <div className="flex gap-2">
-                  <MoneyInput value={inv.amount} onChange={(v) => updateInvestment(inv.id, 'amount', v)}
-                    className="flex-1 px-3 py-2 border border-slate-300 rounded-md"/>
-                  <button onClick={() => removeInvestment(inv.id)}
-                    className="px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"><Trash2 size={16}/></button>
+                <div>
+                  <div className="flex gap-2">
+                    <MoneyInput value={inv.amount} onChange={(v) => updateInvestment(inv.id, 'amount', v)}
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-md"/>
+                    <button onClick={() => removeInvestment(inv.id)}
+                      className="px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"><Trash2 size={16}/></button>
+                  </div>
+                  <BucketSelect value={inv.bucket || ''} onChange={(v) => updateInvestment(inv.id, 'bucket', v)} options={currentBucketOptions}/>
                 </div>
               </div>
             ))}
@@ -2061,8 +2273,16 @@ export default function WealthGuardTool() {
             className="w-full px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 flex items-center justify-center gap-2">
             <Plus size={16}/> Add Investment
           </button>
-          <div className="mt-4 pt-4 border-t">
+          <div className="mt-4 pt-4 border-t flex flex-wrap items-center justify-between gap-2">
             <span className="text-lg font-bold">Total Portfolio: ${totalPortfolio.toLocaleString()}</span>
+            {totalPortfolio > 0 && (
+              <span className="text-xs text-slate-500">
+                ${investmentBucketAssignedTotal.toLocaleString()} of ${totalPortfolio.toLocaleString()} assigned to a bucket
+                {investmentBucketAssignedTotal < totalPortfolio - 0.5 && (
+                  <span className="text-amber-600 font-medium"> — ${(totalPortfolio - investmentBucketAssignedTotal).toLocaleString()} still unassigned</span>
+                )}
+              </span>
+            )}
           </div>
         </div>
 
@@ -2161,6 +2381,9 @@ export default function WealthGuardTool() {
               <label className="block text-sm font-medium text-slate-700 mb-1">Years Until Retirement</label>
               <input type="number" value={yearsUntilRetirement} disabled
                 className="w-full px-3 py-2 bg-slate-100 border rounded-md"/>
+              {isJoint && partnerRetirementAge !== retirementAge && (
+                <p className="text-xs text-slate-500 mt-1">Later of the two retirement ages — full drawdown starts once both have retired.</p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Retirement Years</label>
@@ -2528,6 +2751,139 @@ export default function WealthGuardTool() {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Wealth transfer scenario — year-by-year gifting schedule + projection */}
+            {agedCareEnabled && (
+              <div className="mt-6 pt-5 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h4 className="font-semibold text-slate-800">Wealth Transfer Scenario</h4>
+                    <p className="text-xs text-slate-500">Turns the gifting ceiling above into an actual year-by-year schedule, projecting the giftable asset pool forward against a "no gifting" baseline.</p>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input type="checkbox" checked={wealthTransferEnabled}
+                      onChange={(e) => setWealthTransferEnabled(e.target.checked)}/>
+                    Show
+                  </label>
+                </div>
+
+              {wealthTransferEnabled && (
+                <div className="space-y-4">
+                  <div className="flex items-start gap-2 bg-amber-50 border border-amber-300 text-amber-800 rounded-md p-3 text-xs">
+                    <AlertTriangle size={16} className="shrink-0 mt-0.5"/>
+                    <div>
+                      <strong>Illustration only, not gifting or legal advice.</strong> Uses the same household type, timing
+                      and allowance figures configured in the gifting calculator above — the same caveats apply, including
+                      MSD's "purpose" test. This is a standalone projection of the assets earmarked for gifting; it does not
+                      automatically reduce the client's own retirement portfolio or income sustainability shown elsewhere in
+                      this tool. Involve a lawyer for any actual gifting or trust strategy.
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Assumed growth rate on this pool</label>
+                      <div className="flex items-center gap-1">
+                        <input type="number" step="0.5" value={wealthTransferGrowthRate}
+                          onChange={(e) => setWealthTransferGrowthRate(parseFloat(e.target.value) || 0)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                        <span className="text-sm">%</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Gifting strategy</label>
+                      <select value={wealthTransferStrategy} onChange={(e) => setWealthTransferStrategy(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm">
+                        <option value="max">Gift the maximum allowed each year</option>
+                        <option value="custom">Custom annual amount</option>
+                      </select>
+                    </div>
+                    {wealthTransferStrategy === 'custom' && (
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Planned annual gift</label>
+                        <MoneyInput value={wealthTransferCustomAnnual} onChange={setWealthTransferCustomAnnual}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
+                        <p className="text-xs text-slate-400 mt-1">Still capped at the legal limit for each period — gifting beyond it would be added back anyway.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="rounded-lg p-4 border-l-4 bg-green-50 border-green-500">
+                      <div className="text-xs uppercase tracking-wider text-slate-500">Total transferred to children</div>
+                      <div className="text-3xl font-bold mt-1 text-green-700">${Math.round(wealthTransferResult.totalGifted).toLocaleString()}</div>
+                      <div className="text-xs text-slate-600 mt-1">over {wealthTransferResult.yearsUntilCare} year{wealthTransferResult.yearsUntilCare !== 1 ? 's' : ''}, within the allowable limits</div>
+                    </div>
+                    <div className={`rounded-lg p-4 border-l-4 ${wealthTransferResult.meetsThresholdWithGifting ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500'}`}>
+                      <div className="text-xs uppercase tracking-wider text-slate-500">With this strategy</div>
+                      <div className={`text-2xl font-bold mt-1 ${wealthTransferResult.meetsThresholdWithGifting ? 'text-green-700' : 'text-red-700'}`}>
+                        ${Math.round(wealthTransferResult.finalWithGifting).toLocaleString()}
+                      </div>
+                      <div className="text-xs text-slate-600 mt-1">
+                        {wealthTransferResult.meetsThresholdWithGifting ? '✓ Meets the asset test' : '✗ Still over the threshold'} at application
+                      </div>
+                    </div>
+                    <div className={`rounded-lg p-4 border-l-4 ${wealthTransferResult.meetsThresholdNoGifting ? 'bg-green-50 border-green-500' : 'bg-slate-50 border-slate-400'}`}>
+                      <div className="text-xs uppercase tracking-wider text-slate-500">Without any gifting</div>
+                      <div className="text-2xl font-bold mt-1 text-slate-800">${Math.round(wealthTransferResult.finalNoGifting).toLocaleString()}</div>
+                      <div className="text-xs text-slate-600 mt-1">
+                        {wealthTransferResult.meetsThresholdNoGifting ? '✓ Would meet the asset test anyway' : '✗ Would not meet the asset test'} at application
+                      </div>
+                    </div>
+                  </div>
+
+                  {wealthTransferResult.schedule.length > 0 && (
+                    <div>
+                      <h5 className="text-sm font-semibold text-slate-800 mb-2">Projected Asset Pool — With Gifting vs Without</h5>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <LineChart data={wealthTransferResult.schedule} margin={{left:40, right:20, top:5, bottom:10}}>
+                          <CartesianGrid strokeDasharray="3 3"/>
+                          <XAxis dataKey="year" label={{ value: 'Years from today', position: 'insideBottom', offset: -5, fontSize: 11 }}/>
+                          <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
+                          <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={(y) => `Year ${y}`}/>
+                          <Legend/>
+                          <Line type="monotone" dataKey="poolNoGifting" name="Without gifting" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
+                          <Line type="monotone" dataKey="poolWithGifting" name="With gifting strategy" stroke="#16a34a" strokeWidth={2.5} dot={false}/>
+                        </LineChart>
+                      </ResponsiveContainer>
+                      <p className="text-xs text-slate-500 mt-2">
+                        Threshold: ${wealthTransferResult.threshold.toLocaleString()}. The near period (last 5 years before application) uses
+                        the household near-limit; earlier years use the far-period limit — matching the gifting calculator above.
+                      </p>
+                    </div>
+                  )}
+
+                  <details className="bg-slate-50 border border-slate-200 rounded-md p-3">
+                    <summary className="text-sm font-medium text-slate-700 cursor-pointer">Year-by-year gifting schedule</summary>
+                    <div className="mt-3 max-h-64 overflow-y-auto">
+                      <table className="w-full text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b text-slate-600 sticky top-0 bg-slate-50">
+                            <th className="text-left py-1">Year</th>
+                            <th className="text-left py-1">Period</th>
+                            <th className="text-right py-1">Gift this year</th>
+                            <th className="text-right py-1">Cumulative gifted</th>
+                            <th className="text-right py-1">Pool remaining</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {wealthTransferResult.schedule.map((row) => (
+                            <tr key={row.year} className="border-b">
+                              <td className="py-1">{row.year}</td>
+                              <td className="py-1">{row.period}</td>
+                              <td className="text-right py-1">${row.giftThisYear.toLocaleString()}</td>
+                              <td className="text-right py-1">${row.cumulativeGifted.toLocaleString()}</td>
+                              <td className="text-right py-1">${row.poolWithGifting.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                </div>
+              )}
+            </div>
             )}
           </div>
 
