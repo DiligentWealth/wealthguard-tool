@@ -4,28 +4,19 @@ import {
   PieChart, Pie, Cell, ComposedChart, Area, BarChart, Bar
 } from 'recharts';
 import { Download, Save, FolderOpen, Trash2, Plus, X, Sparkles, AlertTriangle, Dices, FileDown, FileUp, GitCompare } from 'lucide-react';
+import { SUPER_RATES_NET_M, SUPER_RATES_GROSS } from './scenarioSummary';
+import { buildComparison } from './comparison';
+import { HORIZONS, brandAsset } from './brand';
+import { buildReportHTML, loadReportAssets } from './report';
 import { validateScenario } from './scenarioValidation';
 import { supabase, storageMode } from './supabaseClient';
 import { runSimulation, runMonteCarlo, normaliseAllocations, isPlanFunded, solveMaxIncome, makeKiwiSaverPools, annualKiwiSaver, retirementTimeline } from './engine';
 
+export { computeScenarioSummary } from './scenarioSummary';
+
 // =============================================================================
 // CONSTANTS
 // =============================================================================
-
-// NZ Super rates (fortnightly, as at 1 April 2026)
-// Source: https://www.workandincome.govt.nz/eligibility/seniors/superannuation/how-much-you-can-get.html
-const SUPER_RATES_NET_M = {
-  single_alone: 1110.30,        // Live alone or with a dependent child
-  single_shared: 1024.90,       // Live with someone 18+
-  couple_both_each: 854.08,     // Each - both meet criteria
-  couple_one: 854.08            // Only one meets criteria
-};
-const SUPER_RATES_GROSS = {
-  single_alone: 1294.74,
-  single_shared: 1191.14,
-  couple_both_each: 984.28,
-  couple_one: 984.28
-};
 
 const INFLATION_RATE = 0.02;
 
@@ -51,19 +42,8 @@ const NAV_SECTIONS = [
   { id: 'sec-montecarlo',  label: 'Monte Carlo' }
 ];
 
-const BUCKET_META = [
-  { key: 'cashSavings',        label: 'Cash Savings',          color: '#eab308', returnKey: 'cashSavings' },
-  { key: 'termDeposit',        label: 'Capital Preservation',  color: '#f97316', returnKey: 'capitalPreservation' },
-  { key: 'incomePortfolio',    label: 'Income Generator',      color: '#22c55e', returnKey: 'incomeGenerator' },
-  { key: 'balancedPortfolio',  label: 'Steady Growth',         color: '#3b82f6', returnKey: 'steadyGrowth' },
-  { key: 'growthPortfolio',    label: 'Strategic Long Term Growth', color: '#a855f7', returnKey: 'strategicGrowth' }
-];
-
-const ACCUM_BUCKET_META = [
-  { key: 'cashSavings',       label: 'Cash Savings',    color: '#eab308' },
-  { key: 'balancedPortfolio', label: 'Steady Growth',   color: '#3b82f6' },
-  { key: 'growthPortfolio',   label: 'Strategic Long Term Growth', color: '#a855f7' }
-];
+const BUCKET_META = HORIZONS;
+const ACCUM_BUCKET_META = HORIZONS.filter(b => ['cashSavings','balancedPortfolio','growthPortfolio'].includes(b.key));
 
 // Largest-remainder rounding to 1 decimal place across a set of raw percentages.
 // Guarantees the rounded values sum to exactly the rounded-to-1dp total of the raw
@@ -216,114 +196,6 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
 // contributions, simulation params) directly from a saved scenario's data blob, so
 // two scenarios can be compared side-by-side WITHOUT loading either into the live
 // form (which would overwrite whatever the adviser is currently working on).
-export function computeScenarioSummary(data) {
-  const d = data || {};
-  const clientAge = d.clientAge ?? 60;
-  const partnerAge = d.partnerAge ?? 60;
-  const retirementAge = d.retirementAge ?? 65;
-  const isJoint = (d.partnerName || '').trim() !== '';
-  const yearsUntilClientRetirement = Math.max(0, retirementAge - clientAge);
-  // Back-compat: scenarios saved before per-person retirement ages existed have no
-  // partnerRetirementAge field. Falling back to the client's retirement AGE (e.g. 65)
-  // would silently change the household timeline for any couple with different current
-  // ages. Instead, fall back to whatever age the partner will BE when the client
-  // retires — that guarantees yearsUntilPartnerRetirement equals yearsUntilClientRetirement
-  // in the fallback case, so old scenarios reproduce their original numbers exactly.
-  const partnerRetirementAge = d.partnerRetirementAge ?? (partnerAge + yearsUntilClientRetirement);
-  const yearsUntilPartnerRetirement = isJoint ? Math.max(0, partnerRetirementAge - partnerAge) : 0;
-  const {first: yearsUntilRetirement, full: yearsUntilFullRetirement} = retirementTimeline(
-    yearsUntilClientRetirement, yearsUntilPartnerRetirement, isJoint);
-  const livingSituation = d.livingSituation ?? 'single_shared';
-  const useGrossSuper = d.useGrossSuper ?? false;
-  const inflateSuper = d.inflateSuper ?? true;
-
-  const currentInvestments = d.currentInvestments ?? [];
-  const totalInvestments = currentInvestments.filter(i => isJoint || i.id !== 2).reduce((s, i) => s + (i.amount || 0), 0);
-  const totalPortfolio = (d.cash || 0) + (d.termDeposits || 0) + totalInvestments;
-
-  const contributionAmount = d.contributionAmount || 0;
-  const contributionFrequency = d.contributionFrequency || 'annual';
-  const annualContribution =
-    contributionFrequency === 'weekly' ? contributionAmount * 52 :
-    contributionFrequency === 'fortnightly' ? contributionAmount * 26 :
-    contributionFrequency === 'monthly' ? contributionAmount * 12 : contributionAmount;
-
-  const ksEnabled = d.ksEnabled ?? false;
-  const annualKsClient = ksEnabled
-    ? annualKiwiSaver(d.clientSalary || 0, d.clientKsRate || 0, d.clientKsEmployer || 0, d.clientEsctRate)
-    : 0;
-  const annualKsPartner = ksEnabled && isJoint
-    ? annualKiwiSaver(d.partnerSalary || 0, d.partnerKsRate || 0, d.partnerKsEmployer || 0, d.partnerEsctRate)
-    : 0;
-
-  const clientSuperIneligible = d.clientSuperIneligible ?? false;
-  const partnerSuperIneligible = d.partnerSuperIneligible ?? false;
-  const getSuperForYear = (yearsIntoRetirement) => {
-    const cAge = clientAge + yearsUntilRetirement + yearsIntoRetirement;
-    const pAge = partnerAge + yearsUntilRetirement + yearsIntoRetirement;
-    const cEligible = cAge >= 65 && !clientSuperIneligible;
-    const pEligible = isJoint && pAge >= 65 && !partnerSuperIneligible;
-    const rates = useGrossSuper ? SUPER_RATES_GROSS : SUPER_RATES_NET_M;
-    if (isJoint) {
-      if (cEligible && pEligible) return rates.couple_both_each * 2 * 26;
-      if (cEligible || pEligible) return rates.couple_one * 26;
-      return 0;
-    }
-    if (!cEligible) return 0;
-    return rates[livingSituation] * 26;
-  };
-  const superAtRetirement = getSuperForYear(0);
-
-  const allocations = d.allocations ?? { cashSavings: 3, termDeposit: 12, incomePortfolio: 30, balancedPortfolio: 30, growthPortfolio: 25 };
-  const accumulationAllocations = d.accumulationAllocations ?? { cashSavings: 10, balancedPortfolio: 45, growthPortfolio: 45 };
-  const returns = d.returns ?? { cashSavings: 0.25, capitalPreservation: 4, incomeGenerator: 5, steadyGrowth: 5.5, strategicGrowth: 7.5 };
-  const accumulationReturns = d.accumulationReturns ?? {
-    cashSavings: returns.cashSavings, balancedPortfolio: returns.steadyGrowth, growthPortfolio: returns.strategicGrowth
-  };
-  const recSettings = d.recSettings ?? { cashMonths: 4.5 };
-  const projectionYears = d.projectionYears ?? 30;
-  const annualIncome = d.annualIncome ?? 0;
-  const clientWorkingIncome = d.clientWorkingIncome ?? 0;
-  const partnerWorkingIncome = isJoint ? (d.partnerWorkingIncome ?? 0) : 0;
-  const legacyTarget = Math.max(0, d.legacyTarget || 0);
-
-  const simParams = {
-    lockedKiwiSaver: makeKiwiSaverPools(currentInvestments, clientAge, partnerAge, isJoint, yearsUntilClientRetirement, yearsUntilPartnerRetirement, annualKsClient, annualKsPartner),
-    totalPortfolio, allocations, accumulationAllocations, returns, accumulationReturns,
-    yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
-    clientWorkingIncome, partnerWorkingIncome: isJoint ? partnerWorkingIncome : 0,
-    projectionYears, annualContribution, annualKsClient, annualKsPartner,
-    incomeReductionEnabled: d.incomeReductionEnabled ?? false,
-    incomeReductionAfterYears: d.incomeReductionAfterYears ?? 15,
-    incomeReductionPercent: d.incomeReductionPercent ?? 20,
-    agedCareEnabled: d.agedCareEnabled ?? false,
-    agedCareStartYear: d.agedCareStartYear ?? 20,
-    agedCareAnnualCost: d.agedCareAnnualCost ?? 0,
-    agedCareDurationYears: d.agedCareDurationYears ?? 0,
-    badFirstYearEnabled: false, // comparison view uses the baseline (non-stress) path
-    accumulationLumpSums: d.accumulationLumpSums ?? [],
-    retirementLumpSums: d.retirementLumpSums ?? [],
-    getSuperForYear, inflateSuper,
-    cashMonths: recSettings.cashMonths ?? 4.5
-  };
-
-  const projectionData = runSimulation({ ...simParams, annualIncome });
-  const portfolioAtRetirement = (projectionData.find(p => p.year === yearsUntilRetirement) || {}).Total ?? totalPortfolio;
-  const firstYearWorkingIncome = (yearsUntilRetirement < yearsUntilClientRetirement ? clientWorkingIncome : 0) + (yearsUntilRetirement < yearsUntilPartnerRetirement ? partnerWorkingIncome : 0);
-  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - (inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement)));
-
-  // Modelled income ceiling (same binary search as the live app, including legacy target)
-  const maxSustainableIncome = solveMaxIncome(simParams, legacyTarget);
-
-  return {
-    clientName: d.clientName || '', partnerName: d.partnerName || '',
-    clientAge, partnerAge, retirementAge, yearsUntilRetirement, yearsUntilFullRetirement, projectionYears,
-    totalPortfolio, portfolioAtRetirement, superAtRetirement,
-    annualIncome, firstYearDrawdown, maxSustainableIncome, legacyTarget,
-    projectionData
-  };
-}
-
 // =============================================================================
 // COMPONENT
 // =============================================================================
@@ -463,6 +335,20 @@ export default function WealthGuardTool() {
   const [mcSettings, setMcSettings] = useState({ numSims: 1000, downYearThreshold: 0 });
   const [mcAccumulationEnabled, setMcAccumulationEnabled] = useState(false); // apply volatility during accumulation?
   const [mcResults, setMcResults] = useState(null);
+  const [showReportPanel, setShowReportPanel] = useState(false);
+  const [reportAppendix, setReportAppendix] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const [reportDetails, setReportDetails] = useState({kind:'review',goals:'',commentary:'',adviceReference:''});
+  const [reportBusiness, setReportBusiness] = useState(() => {
+    try { const stored = JSON.parse(localStorage.getItem('wealthguard_report_business_v1') || '{}');
+      return {adviserName: typeof stored.adviserName === 'string' ? stored.adviserName.slice(0,2000) : '', disclosureReference: typeof stored.disclosureReference === 'string' ? stored.disclosureReference.slice(0,2000) : ''};
+    } catch { return {adviserName:'',disclosureReference:''}; }
+  });
+  const [reportSettingsWarning, setReportSettingsWarning] = useState('');
+  useEffect(() => { try { localStorage.setItem('wealthguard_report_business_v1',JSON.stringify(reportBusiness));setReportSettingsWarning(''); } catch { setReportSettingsWarning('Business defaults could not be saved in this browser. They still apply to this export.'); } }, [reportBusiness]);
+
+  useEffect(() => { document.title = 'WealthGuard App'; }, []);
   const [mcRunning, setMcRunning] = useState(false);
 
   // --- Recommendation settings ---
@@ -481,6 +367,9 @@ export default function WealthGuardTool() {
   const [showComparePanel, setShowComparePanel] = useState(false);
   const [compareIdA, setCompareIdA] = useState('current');
   const [compareIdB, setCompareIdB] = useState('');
+  const [compareIdC, setCompareIdC] = useState('');
+  const [comparisonEndAge, setComparisonEndAge] = useState('');
+  const [reportComparison, setReportComparison] = useState(false);
 
   // Load scenarios from Supabase on mount — shared across the whole team, not per-browser.
   useEffect(() => {
@@ -765,6 +654,8 @@ export default function WealthGuardTool() {
   );
 
   // Modelled income ceiling — binary search
+  const reportSimulationSignature = JSON.stringify([simulationParams, annualIncome, legacyTarget, volatilities, mcSettings, mcAccumulationEnabled, projectionData]);
+
   const maxSustainableIncome = useMemo(() => {
     return solveMaxIncome(simulationParams, legacyTarget);
   }, [simulationParams, legacyTarget]);
@@ -934,7 +825,7 @@ export default function WealthGuardTool() {
           .map(Number).sort((a, b) => a - b)
           .map(band => ({ label: `${band}–${band + 4}`, count: histo[band] }));
 
-        setMcResults({ ...res, depletionHisto });
+        setMcResults({ ...res, depletionHisto, reportSignature: reportSimulationSignature });
       } catch (e) {
         console.error('Monte Carlo failed', e);
         setMcResults(null);
@@ -961,11 +852,25 @@ export default function WealthGuardTool() {
     badFirstYearEnabled, badFirstYearShockPercent, legacyTarget, showTodaysDollars,
     accumulationLumpSums, retirementLumpSums,
     allocations, accumulationAllocations, returns, recSettings,
-    accumulationReturns, volatilities, mcSettings, mcAccumulationEnabled
+    accumulationReturns, volatilities, mcSettings, mcAccumulationEnabled, reportDetails
   });
+
+  let comparison = null;
+  let comparisonError = '';
+  if (showComparePanel || reportComparison) {
+    try {
+      const selected = [compareIdA,compareIdB,compareIdC].filter(Boolean).map(id => {
+        const saved = scenarios.find(s => s.id === id);
+        if (id !== 'current' && !saved) throw new Error('A selected comparison scenario is no longer available.');
+        return {id, label:id === 'current' ? 'Current plan' : saved.name, data:id === 'current' ? snapshot() : saved.data};
+      });
+      comparison = buildComparison(selected, comparisonEndAge);
+    } catch (e) { comparisonError = e.message; }
+  }
 
   const restore = (s) => {
     validateScenario(s);
+    setReportDetails({kind:s.reportDetails?.kind === 'proposal' ? 'proposal' : 'review',goals:s.reportDetails?.goals || '',commentary:s.reportDetails?.commentary || '',adviceReference:s.reportDetails?.adviceReference || ''});
     const restoredInvestments = [...(s.currentInvestments ?? []), ...[1,2].filter(id => !(s.currentInvestments ?? []).some(i => i.id === id)).map(id => ({id,label:'',amount:0,bucket:''}))];
     const joint = (s.partnerName || '').trim() !== '';
     const clientYears = Math.max(0,(s.retirementAge ?? 65)-(s.clientAge ?? 60));
@@ -1150,15 +1055,33 @@ export default function WealthGuardTool() {
     reader.readAsText(file);
   };
 
-  const generatePDF = () => {
-    const names = [clientName.trim(), partnerName.trim()].filter(Boolean).join(' & ');
-    const date = new Date().toLocaleDateString('en-NZ').replace(/\//g, '-');
-    const prefix = names || 'Scenario';
-    const newTitle = `${prefix} - WealthGuard - ${date}`;
-    const originalTitle = document.title;
-    document.title = newTitle;
-    window.print();
-    setTimeout(() => { document.title = originalTitle; }, 1000);
+  const exportReport = async (format) => {
+    setReportError('');
+    if (reportComparison && !comparison) { setReportError(comparisonError || 'Choose comparison scenarios first.'); return; }
+    if (invalidLumpTiming) { setReportError('Correct the lump-sum timings before exporting.'); return; }
+    try { validateScenario(snapshot()); } catch (e) { setReportError(e.message); return; }
+    const reportWindow = format === 'pdf' ? window.open('', '_blank') : null;
+    if (format === 'pdf' && !reportWindow) { setReportError('Allow pop-ups for this app to open the PDF report, or download HTML.'); return; }
+    if (reportWindow) { reportWindow.opener = null; reportWindow.document.title = 'Preparing WealthGuard report'; reportWindow.document.body.textContent = 'Preparing your WealthGuard report…'; }
+    setReportBusy(true);
+    // Capture the scenario now so edits during asset loading cannot mix inputs.
+    const payload = { scenario: snapshot(), projectionData, totalPortfolio, firstYearDrawdown,
+      yearsUntilRetirement, portfolioAtRetirement, accessibleAtRetirement, retirementAllocDollars,
+      maxSustainableIncome, planFunded, totalShortfall, annualContribution, annualKsClient, annualKsPartner,
+      generatedAt: new Date().toISOString(), reportDetails: {...reportDetails}, reportBusiness: {...reportBusiness}, comparison: reportComparison ? comparison : null,
+      mcResults: !mcRunning && mcResults?.reportSignature === reportSimulationSignature ? mcResults : null };
+    try {
+      const assets = await loadReportAssets();
+      const html = buildReportHTML(payload, assets, { appendix: reportAppendix });
+      if (reportWindow) { reportWindow.document.open(); reportWindow.document.write(html); reportWindow.document.close(); }
+      else {
+        const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+        const link = document.createElement('a'); link.href = url;
+        link.download = `WealthGuard-Report-${[clientName,partnerName].filter(Boolean).join('-').replace(/[^a-zA-Z0-9-]/g,'-') || 'Scenario'}.html`;
+        link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (e) { if (reportWindow) reportWindow.close(); setReportError(`Report could not be created. ${e.message}`); }
+    finally { setReportBusy(false); }
   };
 
   // --- Pie chart data ---
@@ -1255,8 +1178,9 @@ export default function WealthGuardTool() {
   // =============================================================================
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 md:p-8">
+    <div className="wealthguard-app min-h-screen p-4 md:p-8">
       <style>{`
+        @font-face{font-family:inter;font-style:normal;font-weight:400;src:url('${brandAsset('fonts/inter-latin-400-normal.woff2')}') format('woff2');}@font-face{font-family:inter;font-style:normal;font-weight:600;src:url('${brandAsset('fonts/inter-latin-600-normal.woff2')}') format('woff2');}@font-face{font-family:inter;font-style:normal;font-weight:700;src:url('${brandAsset('fonts/inter-latin-700-normal.woff2')}') format('woff2');}@font-face{font-family:manrope;font-style:normal;font-weight:400;src:url('${brandAsset('fonts/manrope-latin-400-normal.woff2')}') format('woff2');}@font-face{font-family:manrope;font-style:normal;font-weight:600;src:url('${brandAsset('fonts/manrope-latin-600-normal.woff2')}') format('woff2');}@font-face{font-family:manrope;font-style:normal;font-weight:700;src:url('${brandAsset('fonts/manrope-latin-700-normal.woff2')}') format('woff2');}
         @media print {
           @page { margin: 1.2cm; size: A4; }
           html, body {
@@ -1349,7 +1273,7 @@ export default function WealthGuardTool() {
       `}</style>
 
       {/* =============== QUICK NAV (screen only) =============== */}
-      <nav className="no-print hidden xl:flex flex-col gap-1 fixed left-4 top-1/2 -translate-y-1/2 z-40 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 p-2 max-h-[80vh] overflow-y-auto">
+      <nav className="wg-quick-nav no-print hidden xl:flex flex-col gap-1 fixed left-4 top-1/2 -translate-y-1/2 z-40 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 p-2 max-h-[80vh] overflow-y-auto">
         {NAV_SECTIONS.map((s) => (
           <button key={s.id} onClick={() => scrollToSection(s.id)}
             className={`text-left px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
@@ -1365,36 +1289,46 @@ export default function WealthGuardTool() {
         <div className="bg-white rounded-lg shadow-lg p-6 md:p-8 mb-6">
           <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-6 flex-wrap">
-              <img src="https://www.diligentwealth.co.nz/s/WealthGuard-Logo.jpg" alt="WealthGuard" className="h-20 md:h-28 w-auto"
-                onError={(e) => { e.target.style.display = 'none'; e.target.nextElementSibling.style.display = 'flex'; }}/>
-              <div style={{display:'none'}} className="flex flex-col items-center justify-center h-28 px-8 bg-gradient-to-r from-amber-500 to-blue-900 rounded-lg">
-                <div className="text-white text-2xl font-bold tracking-wider">WEALTHGUARD</div>
-                <div className="text-white text-xs mt-1">Investment Bucketing Strategy</div>
-              </div>
-              <div className="h-16 w-px bg-slate-300 hidden md:block"></div>
-              <img src="https://www.diligentwealth.co.nz/s/Diligent-Logo-Main.png" alt="Diligent" className="h-12 md:h-16 w-auto"
-                onError={(e) => { e.target.style.display = 'none'; e.target.nextElementSibling.style.display = 'flex'; }}/>
-              <div style={{display:'none'}} className="flex items-center gap-2 h-16">
-                <div className="w-14 h-14 bg-gradient-to-br from-amber-500 to-amber-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-bold text-2xl">D</span>
-                </div>
-                <span className="text-4xl font-bold text-slate-800">diligent</span>
-              </div>
+              <img src={brandAsset('diligent-logo.png')} alt="Diligent Wealth" className="w-48 md:w-60 h-auto" />
+              <div className="md:border-l md:border-slate-200 md:pl-6"><div className="wg-wordmark">WEALTHGUARD™</div><p className="text-xs text-slate-500 mt-1">Investment bucketing strategy</p></div>
             </div>
             <div className="flex gap-2 no-print">
               <button onClick={toggleScenariosPanel}
                 className="flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-semibold shadow">
                 <FolderOpen size={18} /> Scenarios ({scenarios.length})
               </button>
-              <button onClick={generatePDF}
+              <button onClick={() => setShowReportPanel(p => !p)}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold shadow">
-                <Download size={18} /> Export PDF
+                <Download size={18} /> Export report
               </button>
             </div>
           </div>
-          <div className="border-t-4 border-blue-600 pt-4">
-            <p className="text-lg text-slate-600">Comprehensive Investment Bucketing Strategy</p>
+          <div className="border-t border-slate-200 pt-4">
+            <p className="text-lg text-slate-600">A more intentional approach to wealth.</p>
+            <div className="wg-horizons">{HORIZONS.map((b,i) => <div className="wg-horizon" key={b.key}><span>{String(i+1).padStart(2,'0')}</span><div><strong>{b.label}</strong><small>{b.purpose}</small></div></div>)}</div>
           </div>
+          {showReportPanel && <div className="no-print mt-6 p-5 bg-slate-50 border border-slate-200 rounded-lg">
+            <h3 className="font-semibold text-lg text-blue-900">Branded client report</h3>
+            <p className="text-sm text-slate-600 mt-2">Includes the current scenario, five horizons, projections and assumptions. Completed Monte Carlo results are included when they match these inputs.</p>
+            <label className="block text-sm mt-3">Report type<select aria-label="Report type" value={reportDetails.kind} onChange={e=>setReportDetails(d=>({...d,kind:e.target.value}))} className="block border border-slate-300 rounded-md p-2 mt-1"><option value="review">Client review</option><option value="proposal">Proposed retirement strategy</option></select></label>
+            <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">Add report commentary (optional)</summary>
+              <label className="block text-sm mt-3">Client goals<textarea aria-label="Client goals" rows="3" maxLength="2000" value={reportDetails.goals} onChange={e=>setReportDetails(d=>({...d,goals:e.target.value}))} className="w-full block border border-slate-300 rounded-md p-2 mt-1"/></label>
+              <label className="block text-sm mt-3">Adviser commentary<textarea aria-label="Adviser commentary" rows="4" maxLength="2000" value={reportDetails.commentary} onChange={e=>setReportDetails(d=>({...d,commentary:e.target.value}))} className="w-full block border border-slate-300 rounded-md p-2 mt-1"/></label>
+              <label className="block text-sm mt-3">Related advice document or reference (optional)<input aria-label="Advice document reference" maxLength="2000" value={reportDetails.adviceReference} onChange={e=>setReportDetails(d=>({...d,adviceReference:e.target.value}))} className="w-full block border border-slate-300 rounded-md p-2 mt-1"/></label>
+              <p className="text-xs text-slate-500 mt-2">These details are saved with the scenario. Blank sections are omitted.</p>
+            </details>
+            <details className="mt-3"><summary className="cursor-pointer text-sm">Business defaults (optional, saved in this browser)</summary>
+              <label className="block text-sm mt-3">Adviser name<input aria-label="Report adviser name" maxLength="2000" value={reportBusiness.adviserName} onChange={e=>setReportBusiness(d=>({...d,adviserName:e.target.value}))} className="w-full block border border-slate-300 rounded-md p-2 mt-1"/></label>
+              <label className="block text-sm mt-3">Disclosure / complaints information reference<input aria-label="Disclosure reference" maxLength="2000" value={reportBusiness.disclosureReference} onChange={e=>setReportBusiness(d=>({...d,disclosureReference:e.target.value}))} className="w-full block border border-slate-300 rounded-md p-2 mt-1"/></label>
+              {reportSettingsWarning && <p role="alert" className="text-sm text-amber-800 mt-2">{reportSettingsWarning}</p>}
+            </details>
+            <label className="flex items-center gap-2 text-sm mt-4"><input type="checkbox" checked={reportComparison} onChange={e=>{setReportComparison(e.target.checked);if(e.target.checked)setShowComparePanel(true);}}/> Include comparison in report (up to three scenarios)</label>
+            <button onClick={()=>setShowComparePanel(true)} className="text-sm underline text-blue-700 mt-2">Choose comparison scenarios</button>
+            <label className="flex items-center gap-2 text-sm mt-3"><input type="checkbox" checked={reportAppendix} onChange={e=>setReportAppendix(e.target.checked)}/> Include the annual cash-flow appendix</label>
+            <div className="flex gap-3 mt-4 flex-wrap"><button disabled={reportBusy} onClick={()=>exportReport('pdf')} className="px-4 py-2 bg-blue-600 text-white rounded-lg disabled:opacity-50">{reportBusy?'Preparing…':'Open PDF / Print report'}</button><button disabled={reportBusy} onClick={()=>exportReport('html')} className="px-4 py-2 border border-slate-300 rounded-lg disabled:opacity-50">Download HTML</button></div>
+            <p className="text-xs text-slate-500 mt-3">For PDF, use “Save as PDF / Print” in the report, then select Save as PDF, A4 and background graphics in your browser.</p>
+            {reportError && <p role="alert" className="text-red-700 text-sm mt-3">{reportError}</p>}
+          </div>}
         </div>
 
         <div className="bg-white border border-blue-200 rounded-lg p-4 mb-6 text-sm">
@@ -1469,125 +1403,33 @@ export default function WealthGuardTool() {
         )}
 
         {/* =============== SCENARIO COMPARISON =============== */}
-        {showComparePanel && (() => {
-          const getScenarioData = (id) => {
-            if (id === 'current') return snapshot();
-            const scn = scenarios.find(s => s.id === id);
-            return scn ? scn.data : null;
-          };
-          const getScenarioLabel = (id) => {
-            if (id === 'current') return 'Current (unsaved)';
-            const scn = scenarios.find(s => s.id === id);
-            return scn ? scn.name : '';
-          };
-          const dataA = compareIdA ? getScenarioData(compareIdA) : null;
-          const dataB = compareIdB ? getScenarioData(compareIdB) : null;
-          const summaryA = dataA ? computeScenarioSummary(dataA) : null;
-          const summaryB = dataB ? computeScenarioSummary(dataB) : null;
-          const labelA = compareIdA ? getScenarioLabel(compareIdA) : '';
-          const labelB = compareIdB ? getScenarioLabel(compareIdB) : '';
-
-          const maxLen = Math.max(summaryA?.projectionData.length || 0, summaryB?.projectionData.length || 0);
-          const compareChartData = [];
-          for (let i = 0; i < maxLen; i++) {
-            compareChartData.push({
-              year: i,
-              TotalA: summaryA?.projectionData[i]?.Total ?? null,
-              TotalB: summaryB?.projectionData[i]?.Total ?? null
-            });
-          }
-
-          const rows = [
-            { label: 'Client', get: (s) => [s.clientName, s.partnerName].filter(Boolean).join(' & ') || '—', money: false },
-            { label: 'Retirement age', get: (s) => s.retirementAge, money: false },
-            { label: 'Years until retirement', get: (s) => s.yearsUntilRetirement, money: false },
-            { label: 'Retirement duration', get: (s) => `${s.projectionYears} yrs`, money: false },
-            { label: 'Portfolio today', get: (s) => s.totalPortfolio, money: true },
-            { label: 'Portfolio at retirement', get: (s) => s.portfolioAtRetirement, money: true },
-            { label: 'NZ Super at retirement', get: (s) => Math.round(s.superAtRetirement), money: true },
-            { label: 'Target income', get: (s) => s.annualIncome, money: true },
-            { label: 'First-year drawdown', get: (s) => Math.round(s.firstYearDrawdown), money: true },
-            { label: 'Modelled income ceiling', get: (s) => s.maxSustainableIncome, money: true },
-            { label: 'Legacy target', get: (s) => s.legacyTarget, money: true }
-          ];
-
-          return (
-            <div className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print border-2 border-purple-600">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                  <GitCompare size={20} className="text-purple-600"/> Compare Scenarios
-                </h2>
-                <button onClick={() => setShowComparePanel(false)} className="text-slate-500 hover:text-slate-700"><X size={20}/></button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Scenario A</label>
-                  <select value={compareIdA} onChange={(e) => setCompareIdA(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-md">
-                    <option value="current">Current (unsaved)</option>
-                    {scenarios.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Scenario B</label>
-                  <select value={compareIdB} onChange={(e) => setCompareIdB(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-md">
-                    <option value="">Select a scenario…</option>
-                    <option value="current">Current (unsaved)</option>
-                    {scenarios.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              {summaryA && summaryB ? (
-                <div className="space-y-6">
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b-2 text-slate-600">
-                        <th className="text-left py-2 font-medium"></th>
-                        <th className="text-right py-2 font-medium text-blue-700">{labelA}</th>
-                        <th className="text-right py-2 font-medium text-purple-700">{labelB}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((r) => {
-                        const vA = r.get(summaryA), vB = r.get(summaryB);
-                        return (
-                          <tr key={r.label} className="border-b">
-                            <td className="py-1.5 text-slate-600">{r.label}</td>
-                            <td className="text-right font-medium">{r.money ? `$${Number(vA).toLocaleString()}` : vA}</td>
-                            <td className="text-right font-medium">{r.money ? `$${Number(vB).toLocaleString()}` : vB}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-
-                  <div>
-                    <h3 className="font-semibold text-slate-800 mb-2">Portfolio Total — A vs B</h3>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <LineChart data={compareChartData} margin={{left:40, right:20, top:5, bottom:10}}>
-                        <CartesianGrid strokeDasharray="3 3"/>
-                        <XAxis dataKey="year"/>
-                        <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
-                        <Tooltip formatter={(v) => v == null ? 'n/a' : `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`}/>
-                        <Legend/>
-                        <Line isAnimationActive={false} type="monotone" dataKey="TotalA" name={`A: ${labelA}`} stroke="#2563eb" strokeWidth={2.5} dot={false} connectNulls/>
-                        <Line isAnimationActive={false} type="monotone" dataKey="TotalB" name={`B: ${labelB}`} stroke="#9333ea" strokeWidth={2.5} dot={false} connectNulls/>
-                      </LineChart>
-                    </ResponsiveContainer>
-                    <p className="text-xs text-slate-500 mt-2">
-                      X-axis: years from today (not aligned to retirement age, since the two scenarios may retire at different ages).
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-slate-500 italic text-sm">Choose two scenarios above to compare them side by side.</p>
-              )}
-            </div>
-          );
-        })()}
+        {showComparePanel && <div className="bg-white rounded-lg border border-blue-200 p-6 mb-6 no-print">
+          <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Compare retirement scenarios</h2><button aria-label="Close comparison" onClick={()=>setShowComparePanel(false)}><X size={20}/></button></div>
+          <p className="text-sm text-slate-600 mb-4">Choose two or three scenarios saved for the same clients. All are projected to a common end date; the saved scenarios are not changed.</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">{[[compareIdA,setCompareIdA],[compareIdB,setCompareIdB],[compareIdC,setCompareIdC]].map(([id,setId],i)=><label key={i} className="text-sm">Scenario {['A','B','C'][i]}{i===2?' (optional)':''}<select aria-label={`Scenario ${['A','B','C'][i]}`} value={id} onChange={e=>setId(e.target.value)} className="w-full border border-slate-300 rounded-md p-2 mt-1"><option value="">Select a scenario…</option><option value="current">Current plan</option>{scenarios.map(sc=><option key={sc.id} value={sc.id}>{sc.name}</option>)}</select></label>)}</div>
+          <label className="block text-sm mt-4">Final age of the younger client (or the client if single)<input aria-label="Comparison final age" type="number" min="1" max="360" step="1" value={comparisonEndAge} placeholder={comparison ? String(comparison.finalAge) : 'Automatic'} onChange={e=>setComparisonEndAge(e.target.value)} className="block border border-slate-300 rounded-md p-2 mt-1 w-48"/></label>
+          <p className="text-xs text-slate-500 mt-2">Leave blank to use the latest end date across the selected scenarios. Changing this field affects the comparison only.</p>
+          <label className="flex gap-2 items-center text-sm mt-4"><input type="checkbox" checked={reportComparison} onChange={e=>setReportComparison(e.target.checked)}/> Include comparison in report</label>
+          {comparisonError && <p role="alert" className="text-sm text-amber-800 mt-4">{comparisonError}</p>}
+          {comparison && <div className="mt-5">
+            <p className="text-sm mb-3">Common end: {comparison.endYears} years from today, when the younger client is {comparison.finalAge}.</p>
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left p-2">Comparison</th>{comparison.columns.map(c=><th className="p-2 text-right max-w-xs break-words" key={c.id}>{c.label}</th>)}</tr></thead><tbody>{[
+              ['Client retirement age',c=>c.summary.retirementAge],
+              ['Partner retirement age',c=>c.summary.partnerName ? c.summary.partnerRetirementAge : '—'],
+              ['Retirement years compared',c=>c.summary.projectionYears],
+              ["Annual spending (today’s NZD)",c=>`$${Math.round(c.summary.annualIncome).toLocaleString()}`],
+              ['Portfolio at first retirement (future NZD)',c=>`$${Math.round(c.summary.portfolioAtRetirement).toLocaleString()}`],
+              ['Accessible at first retirement (future NZD)',c=>`$${Math.round(c.summary.accessibleAtRetirement).toLocaleString()}`],
+              ["First-year withdrawal needed (today’s NZD)",c=>`$${Math.round(c.summary.firstYearDrawdown).toLocaleString()}`],
+              ['Projected spending / lump-sum shortfalls (future NZD)',c=>`$${Math.round(c.summary.totalShortfall).toLocaleString()}`],
+              ['Balance at common end date (future NZD)',c=>`$${Math.round(c.summary.finalBalance).toLocaleString()}`],
+              ['Remaining-balance target met?',c=>c.summary.legacyMet?'Yes':'No']
+            ].map(([label,get])=><tr className="border-t" key={label}><td className="p-2 text-slate-600">{label}</td>{comparison.columns.map(c=><td className="p-2 text-right" key={c.id}>{get(c)}</td>)}</tr>)}</tbody></table></div>
+            <div className="h-80 mt-5"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparison.chart} margin={{left:20,right:15,top:10,bottom:10}}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="year"/><YAxis width={80} tickFormatter={v=>`$${Math.round(v/1000)}k`}/><Tooltip formatter={v=>`$${Number(v).toLocaleString()}`}/><Legend/>{comparison.columns.map((c,i)=><Line key={c.id} isAnimationActive={false} type="monotone" dataKey={'scenario'+i} name={c.label} stroke={['#293A61','#D5A65A','#8995A8'][i]} strokeWidth={2.5} dot={false}/>)}</LineChart></ResponsiveContainer></div>
+            <p className="text-xs text-slate-500">X-axis: years from today. Values: future NZD. {comparison.differences.length ? `Other inputs differ: ${comparison.differences.join(', ')}.` : 'Retirement dates are the only financial inputs changed; the end date is aligned.'}</p>
+            {comparison.relativeEvents && <p className="text-xs text-slate-500 mt-2">Retirement lump sums, care costs, spending reductions and first-year stress are timed relative to each scenario’s first retirement. Their calendar timing may change when retirement dates change.</p>}
+          </div>}
+        </div>}
 
         {/* =============== CLIENT INFO =============== */}
         <div id="sec-client" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
@@ -2384,7 +2226,7 @@ export default function WealthGuardTool() {
                           <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={(y) => `Year ${y}`}/>
                           <Legend/>
                           <Line isAnimationActive={false} type="monotone" dataKey="poolNoGifting" name="Without gifting" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
-                          <Line isAnimationActive={false} type="monotone" dataKey="poolWithGifting" name="With gifting strategy" stroke="#16a34a" strokeWidth={2.5} dot={false}/>
+                          <Line isAnimationActive={false} type="monotone" dataKey="poolWithGifting" name="With gifting strategy" stroke="#8995A8" strokeWidth={2.5} dot={false}/>
                         </LineChart>
                       </ResponsiveContainer>
                       <p className="text-xs text-slate-500 mt-2">
@@ -3065,11 +2907,11 @@ export default function WealthGuardTool() {
           {/* Visual cascade */}
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-6">
             {[
-              { label: 'Cash Savings',   color: '#eab308', role: 'Everyday spending',        detail: `${recSettings.cashMonths} months of expenses` },
-              { label: 'Income Generator', color: '#22c55e', role: 'Tops up Cash',           detail: 'Quarterly top-ups' },
-              { label: 'Steady Growth',  color: '#3b82f6', role: 'Tops up Income',           detail: 'Medium-term compounding' },
-              { label: 'Strategic Long Term Growth', color: '#a855f7', role: 'Tops up Income',         detail: 'Long-term compounding' },
-              { label: 'Capital Preservation', color: '#f97316', role: 'Emergency reserve',  detail: `${recSettings.tdYears} years of expenses` }
+              { label: 'Cash Savings',   color: '#D5A65A', role: 'Everyday spending',        detail: `${recSettings.cashMonths} months of expenses` },
+              { label: 'Income Generator', color: '#8995A8', role: 'Tops up Cash',           detail: 'Quarterly top-ups' },
+              { label: 'Steady Growth',  color: '#526784', role: 'Tops up Income',           detail: 'Medium-term compounding' },
+              { label: 'Strategic Long Term Growth', color: '#293A61', role: 'Tops up Income',         detail: 'Long-term compounding' },
+              { label: 'Capital Preservation', color: '#B8873E', role: 'Emergency reserve',  detail: `${recSettings.tdYears} years of expenses` }
             ].map((b, i) => (
               <div key={b.label} className="relative">
                 <div className="rounded-lg p-3 border-l-4 h-full" style={{ borderLeftColor: b.color, backgroundColor: b.color + '15' }}>
@@ -3212,12 +3054,12 @@ export default function WealthGuardTool() {
               <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={ageTooltipLabel}/>
               <Legend wrapperStyle={{paddingTop: '10px'}}/>
               <Line isAnimationActive={false} type="monotone" dataKey="lockedKiwiSaver" name="Locked KiwiSaver" stroke="#64748b" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Total" stroke="#1f2937" strokeWidth={3} dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Cash Savings" stroke="#eab308" strokeWidth={2} dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Capital Preservation" stroke="#f97316" strokeWidth={2} dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Income Generator" stroke="#22c55e" strokeWidth={2} dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Steady Growth" stroke="#3b82f6" strokeWidth={2} dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Strategic Long Term Growth" stroke="#a855f7" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Total" stroke="#17243D" strokeWidth={3} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Cash Savings" stroke="#D5A65A" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Capital Preservation" stroke="#B8873E" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Income Generator" stroke="#8995A8" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Steady Growth" stroke="#526784" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Strategic Long Term Growth" stroke="#293A61" strokeWidth={2} dot={false}/>
             </LineChart>
           </PrintableChart>
           {yearsUntilRetirement > 0 && (
@@ -3240,10 +3082,10 @@ export default function WealthGuardTool() {
               <YAxis tickFormatter={(v) => `$${(v/1000).toLocaleString()}k`} width={80}/>
               <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={ageTooltipLabel}/>
               <Legend wrapperStyle={{paddingTop: '10px'}}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Net Working Income" stroke="#16a34a" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Net Working Income" stroke="#8995A8" strokeWidth={2} dot={false}/>
               <Line isAnimationActive={false} type="monotone" dataKey="Required Drawdown" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
-              <Line isAnimationActive={false} type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Annual Drawdown" stroke="#293A61" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Cumulative Drawdown" stroke="#D5A65A" strokeWidth={3} dot={false}/>
             </LineChart>
           </PrintableChart>
           <p className="text-xs mt-3 text-slate-500 no-print">
@@ -3391,10 +3233,10 @@ export default function WealthGuardTool() {
                       formatter={(v, name) => [`$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`, name]}/>
                     {/* Stacked invisible base + bands to create a fan */}
                     <Area isAnimationActive={false} type="monotone" dataKey="base" stackId="1" stroke="none" fill="transparent" name="10th pct" legendType="none"/>
-                    <Area isAnimationActive={false} type="monotone" dataKey="band10_25" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.15} name="10–25th pct"/>
-                    <Area isAnimationActive={false} type="monotone" dataKey="band25_75" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.28} name="25–75th pct (mid 50%)"/>
-                    <Area isAnimationActive={false} type="monotone" dataKey="band75_90" stackId="1" stroke="none" fill="#3b82f6" fillOpacity={0.15} name="75–90th pct"/>
-                    <Line isAnimationActive={false} type="monotone" dataKey="p50" stroke="#1d4ed8" strokeWidth={3} dot={false} name="Median"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="band10_25" stackId="1" stroke="none" fill="#526784" fillOpacity={0.15} name="10–25th pct"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="band25_75" stackId="1" stroke="none" fill="#526784" fillOpacity={0.28} name="25–75th pct (mid 50%)"/>
+                    <Area isAnimationActive={false} type="monotone" dataKey="band75_90" stackId="1" stroke="none" fill="#526784" fillOpacity={0.15} name="75–90th pct"/>
+                    <Line isAnimationActive={false} type="monotone" dataKey="p50" stroke="#293A61" strokeWidth={3} dot={false} name="Median"/>
                   </ComposedChart>
                 </PrintableChart>
                 <p className="text-xs text-slate-500 mt-2 chart-caption">
@@ -3413,7 +3255,7 @@ export default function WealthGuardTool() {
                       <XAxis dataKey="label" tick={{fontSize: 12}}/>
                       <YAxis allowDecimals={false} width={50}/>
                       <Tooltip formatter={(v) => [`${v} runs`, 'Count']} labelFormatter={(l) => `Retirement years ${l}`}/>
-                      <Bar isAnimationActive={false} dataKey="count" fill="#dc2626" radius={[4,4,0,0]}/>
+                      <Bar isAnimationActive={false} dataKey="count" fill="#293A61" radius={[4,4,0,0]}/>
                     </BarChart>
                   </PrintableChart>
                   <p className="text-xs text-slate-500 mt-2 chart-caption">

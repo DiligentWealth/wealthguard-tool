@@ -13,6 +13,11 @@ export function validateScenario(s) {
   };
   visit(s);
   for (const key of ['clientName','partnerName']) if (s[key] != null && typeof s[key] !== 'string') throw new Error(key+' must be text.');
+  if (s.reportDetails != null) {
+    if (!s.reportDetails || typeof s.reportDetails !== 'object' || Array.isArray(s.reportDetails)) throw new Error('Invalid report details.');
+    if (s.reportDetails.kind != null && !['review','proposal'].includes(s.reportDetails.kind)) throw new Error('Invalid report type.');
+    for (const k of ['goals','commentary','adviceReference']) if (s.reportDetails[k] != null && typeof s.reportDetails[k] !== 'string') throw new Error('Report text must be text.');
+  }
   const money = ['clientWorkingIncome','partnerWorkingIncome','cash','termDeposits','annualIncome','contributionAmount','clientSalary','partnerSalary','legacyTarget','agedCareAnnualCost'];
   const numeric = (v,k,min=0,max=1e12,integer=false) => {
     if (typeof v !== 'number' || !Number.isFinite(v) || v<min || v>max || (integer && !Number.isInteger(v))) throw new Error('Invalid '+k+'.');
