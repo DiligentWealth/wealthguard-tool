@@ -25,6 +25,27 @@ function chart(data, series, label){
   svg+=`<text x="${w/2}" y="${h-1}" text-anchor="middle">Years from today</text></svg>`;
   return svg+`<div class="legend">${series.map(s=>`<span><i style="background:${s.color}"></i>${escapeHTML(s.label)}</span>`).join('')}</div>`;
 }
+function monteCarloFan(bands){
+  if(!bands?.length) return '';
+  const w=640,h=240,l=64,r=18,t=16,b=38;
+  const max=Math.max(1,...bands.map(d=>d.p90))*1.08;
+  const maxYear=Math.max(1,...bands.map(d=>d.year));
+  const x=v=>l+(w-l-r)*v/maxYear,y=v=>h-b-(h-t-b)*v/max;
+  const points=(rows,key)=>rows.map((d,i)=>`${i?'L':'M'}${x(d.year).toFixed(2)},${y(d[key]).toFixed(2)}`).join(' ');
+  const area=(low,high,color)=>`<path d="${points(bands,high)} ${points([...bands].reverse(),low).replace(/^M/,'L')} Z" fill="${color}"/>`;
+  let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Monte Carlo investment balance range in future dollars"><title>Monte Carlo investment balance range in future dollars</title>`;
+  for(let i=0;i<=4;i++){const v=max*i/4;svg+=`<line x1="${l}" x2="${w-r}" y1="${y(v)}" y2="${y(v)}" stroke="#DFE2E7"/><text x="${l-8}" y="${y(v)+4}" text-anchor="end">${v>=1e6?(v/1e6).toFixed(1)+'m':Math.round(v/1000)+'k'}</text>`;const year=Math.round(maxYear*i/4);svg+=`<text x="${x(year)}" y="${h-17}" text-anchor="middle">${year}</text>`;}
+  svg+=area('p10','p90','#DEE6F0')+area('p25','p75','#91A9C6')+`<path d="${points(bands,'p50')}" fill="none" stroke="#293A61" stroke-width="3"/><text x="${w/2}" y="${h-1}" text-anchor="middle">Years from today</text></svg>`;
+  return svg+'<div class="legend"><span><i style="background:#293A61"></i>Median (50th percentile)</span><span><i style="background:#91A9C6"></i>Middle 50% (25th–75th)</span><span><i style="background:#DEE6F0"></i>Middle 80% (10th–90th)</span></div>';
+}
+function shortfallHistogram(mc,yearsUntilRetirement){
+  const counts=new Map();
+  mc.depletionYears.forEach(year=>{const start=Math.floor((year-yearsUntilRetirement)/5)*5;counts.set(start,(counts.get(start)||0)+1);});
+  const bins=[...counts].sort((a,b)=>a[0]-b[0]);
+  if(!bins.length) return '<p class="note">No simulated run missed a spending, one-off withdrawal or remaining-balance target.</p>';
+  const w=640,h=130,l=40,b=32,t=12,space=(w-l-12)/bins.length,max=Math.max(...bins.map(x=>x[1]));
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Number of simulations by first unmet target, in years from first retirement"><title>Number of simulations by first unmet target, in years from first retirement</title>${bins.map(([year,count],i)=>{const height=(h-b-t-14)*count/max;const x=l+i*space+space*.15;return `<rect x="${x}" y="${h-b-height}" width="${space*.7}" height="${height}" fill="#D5A65A"/><text x="${x+space*.35}" y="${h-b-height-5}" text-anchor="middle">${count}</text><text x="${x+space*.35}" y="${h-17}" text-anchor="middle">${year}–${year+4}</text>`;}).join('')}<text x="${w/2}" y="${h-1}" text-anchor="middle">Years from first retirement</text></svg>`;
+}
 function table(headers,rows){return `<table><thead><tr>${headers.map(h=>`<th>${escapeHTML(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(c=>`<td>${escapeHTML(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;}
 function metric(label,value,note=''){return `<div class="metric"><small>${escapeHTML(label)}</small><strong>${escapeHTML(value)}</strong><span>${escapeHTML(note)}</span></div>`;}
 export function buildReportHTML(p,assets,options={}){
@@ -103,7 +124,16 @@ export function buildReportHTML(p,assets,options={}){
     <h3>Market fluctuation assumptions</h3>${table(['Bucket','Assumed annual variability'],[['Income Generator',pct(s.volatilities.incomeGenerator)],['Steady Growth',pct(s.volatilities.steadyGrowth)],['Strategic Long Term Growth',pct(s.volatilities.strategicGrowth)]])}
     <p class="note">These figures describe the size of annual return fluctuations used in the model. Fluctuations before retirement are ${s.mcAccumulationEnabled?'included':'not included'}. The withdrawal-rule down-year threshold is ${pct(s.mcSettings.downYearThreshold)}.</p>
     <p>The model simplifies markets. Severe losses, prolonged downturns and unusual events may be understated. Cash Savings and Capital Preservation returns are held fixed for modelling; this does not guarantee their returns or protect against losses.</p>
-  `);} else add('Reviewing your plan under uncertainty','Discussion with your adviser',`<p class="lead">The main projection uses fixed return assumptions. A simulation of varying annual returns has not been included.</p><p>Before making decisions, consider:</p><ul><li>How lower investment returns could affect your spending.</li><li>Whether withdrawals could be reduced following a market downturn.</li><li>Whether enough money is available before KiwiSaver can be accessed.</li><li>How higher living costs or a longer retirement could affect the plan.</li><li>Whether care-cost and family-support assumptions remain appropriate.</li></ul><p>Your adviser can explore alternative scenarios and explain how they affect the results.</p>`);
+  `);
+    if(mc.bands?.length){const end=mc.bands[mc.bands.length-1];add('The range of simulated outcomes','Monte Carlo simulation graphs',`
+      <h3>Investment balances across simulated outcomes · future dollars</h3>${monteCarloFan(mc.bands)}
+      <p class="note">At each year, the dark shaded band contains the middle 50% of simulated balances and the light band extends to the middle 80%. The navy line is the median. Outcomes outside the shaded bands are possible. The lines join yearly percentiles; they do not represent individual investment paths.</p>
+      <div class="metrics">${metric('Lower end balance',money(end.p10),'10th percentile')}${metric('Median end balance',money(end.p50),'50th percentile')}${metric('Upper end balance',money(end.p90),'90th percentile')}</div>
+      <h3>When simulated runs first missed a target</h3>${shortfallHistogram(mc,years)}
+      <p class="note">Bar labels show the number of runs first missing a target within each five-year period, measured from first retirement. A missed target can be a spending or one-off withdrawal shortfall, or a balance below the target at the end; it does not necessarily mean the investments ran out. Each run is counted once.</p>
+      <p class="note">These are modelled outcomes, not forecasts or a measured probability of success. Future dollars are not adjusted for inflation. Re-running the simulation can change the results.</p>
+    `);}
+  } else add('Reviewing your plan under uncertainty','Discussion with your adviser',`<p class="lead">The main projection uses fixed return assumptions. A simulation of varying annual returns has not been included.</p><p>Before making decisions, consider:</p><ul><li>How lower investment returns could affect your spending.</li><li>Whether withdrawals could be reduced following a market downturn.</li><li>Whether enough money is available before KiwiSaver can be accessed.</li><li>How higher living costs or a longer retirement could affect the plan.</li><li>Whether care-cost and family-support assumptions remain appropriate.</li></ul><p>Your adviser can explore alternative scenarios and explain how they affect the results.</p>`);
   if(p.comparison){const c=p.comparison;const cols=c.columns;
     const rows=[...(c.agesDiffer ? [['Current ages (client / partner)',...cols.map(x=>`${x.summary.clientAge}${x.summary.partnerName ? ` / ${x.summary.partnerAge}` : ''}`)],['Ages at comparison end',...cols.map(x=>`${x.summary.clientAge+c.endYears}${x.summary.partnerName ? ` / ${x.summary.partnerAge+c.endYears}` : ''}`)]] : []),['Client retirement age',...cols.map(x=>x.summary.retirementAge)],['Partner retirement age',...cols.map(x=>x.summary.partnerName?x.summary.partnerRetirementAge:'—')],["Spending / year (today’s dollars)",...cols.map(x=>money(x.summary.annualIncome))],['Balance at first retirement¹',...cols.map(x=>money(x.summary.portfolioAtRetirement))],['Available at first retirement¹',...cols.map(x=>money(x.summary.accessibleAtRetirement))],["First-year withdrawal needed (today’s dollars)",...cols.map(x=>money(x.summary.firstYearDrawdown))],['Spending / withdrawal shortfalls¹',...cols.map(x=>money(x.summary.totalShortfall))],['Balance at common end date¹',...cols.map(x=>money(x.summary.finalBalance))],['Remaining-balance target¹',...cols.map(x=>money(x.summary.legacyTarget))],['Remaining-balance target met?',...cols.map(x=>x.summary.legacyMet?'Yes':'No')]];
     add('Comparing your retirement options','Scenario comparison',`<p>All scenarios end ${c.endYears} years from today, at age ${c.finalAge} for Scenario A’s younger client${cols[0].summary.partnerName?'':' (or the client if single)'}. Earlier retirement generally means fewer contribution years and more withdrawal years.</p>
