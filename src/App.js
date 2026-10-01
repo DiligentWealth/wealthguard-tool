@@ -1,3 +1,4 @@
+import { saveReportRecovery, readReportRecovery } from './reportRecovery';
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -201,7 +202,7 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
 // COMPONENT
 // =============================================================================
 
-export default function WealthGuardTool() {
+export default function WealthGuardTool({reportUserId}) {
   // --- Client info ---
   const [cashflowMode, setCashflowMode] = useState('quarterly');
   const [clientName, setClientName]       = useState('');
@@ -341,6 +342,7 @@ export default function WealthGuardTool() {
   const [reportAppendix, setReportAppendix] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const [reportError, setReportError] = useState('');
+  const [reportNotice, setReportNotice] = useState('');
   const [reportDetails, setReportDetails] = useState({kind:'review',goals:'',commentary:'',adviceReference:''});
   const [reportBusiness, setReportBusiness] = useState(() => {
     try { const stored = JSON.parse(localStorage.getItem('wealthguard_report_business_v1') || '{}');
@@ -960,6 +962,28 @@ export default function WealthGuardTool() {
     setMcAccumulationEnabled(s.mcAccumulationEnabled ?? false);
   };
 
+  const recoveryRestoreRef = useRef(null);
+  recoveryRestoreRef.current = recovery => {
+    restore(recovery.scenario);
+    setCompareIdA(recovery.compareIdA || '');
+    setCompareIdB(recovery.compareIdB || '');
+    setCompareIdC(recovery.compareIdC || '');
+    setComparisonEndAge(recovery.comparisonEndAge || '');
+    setReportComparison(!!recovery.reportComparison);
+    setReportAppendix(!!recovery.reportAppendix);
+    setShowReportPanel(true);
+    setReportNotice('Restored the calculator inputs and comparison selections saved before your last report export. Re-run Monte Carlo if you need its graph in a new report.');
+  };
+  const recoveredUserRef = useRef(null);
+  useEffect(() => {
+    if (!reportUserId || recoveredUserRef.current === reportUserId) return;
+    recoveredUserRef.current = reportUserId;
+    try {
+      const recovery = readReportRecovery(window.sessionStorage, reportUserId);
+      if (recovery?.scenario) recoveryRestoreRef.current(recovery);
+    } catch { /* An invalid checkpoint must not prevent the calculator opening. */ }
+  }, [reportUserId]);
+
   const suggestScenarioName = () => {
     const names = [clientName.trim(), partnerName.trim()].filter(Boolean).join(' & ');
     const date = new Date().toLocaleDateString('en-NZ');
@@ -1063,9 +1087,15 @@ export default function WealthGuardTool() {
     if (reportComparison && !comparison) { setReportError(comparisonError || 'Choose comparison scenarios first.'); return; }
     if (invalidLumpTiming) { setReportError('Correct the lump-sum timings before exporting.'); return; }
     try { validateScenario(snapshot()); } catch (e) { setReportError(e.message); return; }
-    const reportWindow = format === 'pdf' ? window.open('', '_blank') : null;
-    if (format === 'pdf' && !reportWindow) { setReportError('Allow pop-ups for this app to open the PDF report, or download HTML.'); return; }
-    if (reportWindow) { reportWindow.opener = null; reportWindow.document.title = 'Preparing WealthGuard report'; reportWindow.document.body.textContent = 'Preparing your WealthGuard report…'; }
+    setReportNotice('');
+    // A short-lived, same-account checkpoint protects against a browser reload.
+    let checkpointSaved = false;
+    try {
+      checkpointSaved = saveReportRecovery(window.sessionStorage, reportUserId, {
+        scenario: snapshot(), compareIdA, compareIdB, compareIdC, comparisonEndAge,
+        reportComparison, reportAppendix
+      });
+    } catch { /* Export still works if browser storage is unavailable. */ }
     setReportBusy(true);
     // Capture the scenario now so edits during asset loading cannot mix inputs.
     const payload = { scenario: snapshot(), projectionData, totalPortfolio, firstYearDrawdown,
@@ -1076,23 +1106,16 @@ export default function WealthGuardTool() {
     try {
       const assets = await loadReportAssets();
       const html = buildReportHTML(payload, assets, { appendix: reportAppendix });
-      if (reportWindow) {
-        // Load a complete document rather than replacing the about:blank popup in place.
-        if (reportWindow.closed) throw new Error('The report tab was closed. Open the report again.');
-        const reportURL = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
-        try { reportWindow.location.replace(reportURL); }
-        catch (e) { URL.revokeObjectURL(reportURL); throw e; }
-        // Embedded fonts/images need no later requests to this URL. Keep it alive
-        // for slow loads before releasing it; the loaded tab remains printable.
-        setTimeout(() => URL.revokeObjectURL(reportURL), 10 * 60 * 1000);
-      }
-      else {
-        const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
-        const link = document.createElement('a'); link.href = url;
-        link.download = `WealthGuard-Report-${[clientName,partnerName].filter(Boolean).join('-').replace(/[^a-zA-Z0-9-]/g,'-') || 'Scenario'}.html`;
-        link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }
-    } catch (e) { if (reportWindow) reportWindow.close(); setReportError(`Report could not be created. ${e.message}`); }
+      // Print a downloaded document, independent of the live calculator tab.
+      // Safari can produce an empty PDF from a dynamically navigated blob tab.
+      const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+      const link = document.createElement('a'); link.href = url;
+      link.download = `WealthGuard-Report-${[clientName,partnerName].filter(Boolean).join('-').replace(/[^a-zA-Z0-9-]/g,'-') || 'Scenario'}.html`;
+      document.body.appendChild(link);
+      link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+      setReportNotice(`${format === 'pdf' ? 'Print-ready report' : 'HTML report'} downloaded. Open it from Downloads, wait for “Ready”, then choose “Save as PDF / Print”.${reportUserId && !checkpointSaved ? ' The recovery checkpoint could not be saved; save your scenario before leaving the calculator.' : ''}`);
+    } catch (e) { setReportError(`Report could not be created. ${e.message}`); }
     finally { setReportBusy(false); }
   };
 
@@ -1337,8 +1360,9 @@ export default function WealthGuardTool() {
             <label className="flex items-center gap-2 text-sm mt-4"><input type="checkbox" checked={reportComparison} onChange={e=>{setReportComparison(e.target.checked);if(e.target.checked)setShowComparePanel(true);}}/> Include comparison in report (up to three scenarios)</label>
             <button onClick={()=>setShowComparePanel(true)} className="text-sm underline text-blue-700 mt-2">Choose comparison scenarios</button>
             <label className="flex items-center gap-2 text-sm mt-3"><input type="checkbox" checked={reportAppendix} onChange={e=>setReportAppendix(e.target.checked)}/> Include the annual cash-flow appendix</label>
-            <div className="flex gap-3 mt-4 flex-wrap"><button disabled={reportBusy} onClick={()=>exportReport('pdf')} className="px-4 py-2 bg-blue-600 text-white rounded-lg disabled:opacity-50">{reportBusy?'Preparing…':'Open PDF / Print report'}</button><button disabled={reportBusy} onClick={()=>exportReport('html')} className="px-4 py-2 border border-slate-300 rounded-lg disabled:opacity-50">Download HTML</button></div>
-            <p className="text-xs text-slate-500 mt-3">For PDF, use “Save as PDF / Print” in the report, then select Save as PDF, A4 and background graphics in your browser.</p>
+            <div className="flex gap-3 mt-4 flex-wrap"><button disabled={reportBusy} onClick={()=>exportReport('pdf')} className="px-4 py-2 bg-blue-600 text-white rounded-lg disabled:opacity-50">{reportBusy?'Preparing…':'Download report for PDF / Print'}</button><button disabled={reportBusy} onClick={()=>exportReport('html')} className="px-4 py-2 border border-slate-300 rounded-lg disabled:opacity-50">Download HTML</button></div>
+            <p className="text-xs text-slate-500 mt-3">For PDF, open the downloaded HTML report from Downloads in Safari or Chrome. Wait for “Ready”, then use “Save as PDF / Print”. Choose A4, 100% scale and background graphics, with browser headers and footers off. Printing happens in the separate report document.</p>
+            {reportNotice && <p role="status" className="text-slate-700 text-sm mt-3">{reportNotice}</p>}
             {reportError && <p role="alert" className="text-red-700 text-sm mt-3">{reportError}</p>}
           </div>}
         </div>

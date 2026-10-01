@@ -1,19 +1,51 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
+import { clearReportRecovery } from './reportRecovery';
 
 export default function LoginGate({ children }) {
-  const [session, setSession] = useState(undefined); // undefined = still checking
+  const [userId, setUserId] = useState(undefined); // undefined = still checking
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    let active = true;
+    const initialUser = (session) => {
+      if (!active) return;
+      // A delayed startup result must never overwrite a newer auth event.
+      setUserId(current => current === undefined ? (session?.user?.id || null) : current);
+    };
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return;
+      if (event === 'SIGNED_OUT') {
+        try { clearReportRecovery(window.sessionStorage); } catch { /* Storage can be blocked. */ }
+        setUserId(null);
+      } else if (event === 'INITIAL_SESSION') {
+        initialUser(session);
+      } else if (session?.user?.id) {
+        // Tab refocus and token refresh for the same user keep the calculator
+        // mounted. Empty non-sign-out notifications are not a logout.
+        setUserId(session.user.id);
+      }
     });
-    return () => listener.subscription.unsubscribe();
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) {
+        initialUser(null);
+        setError(error.message || 'Could not check your sign-in. Please sign in again.');
+      } else {
+        initialUser(data?.session);
+      }
+    }).catch(() => {
+      if (!active) return;
+      initialUser(null);
+      setError('Could not check your sign-in. Please sign in again.');
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   const handleLogin = async (e) => {
@@ -26,7 +58,7 @@ export default function LoginGate({ children }) {
   };
 
   // Still checking for an existing session — avoid a flash of the login form.
-  if (session === undefined) {
+  if (userId === undefined) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="text-slate-400 text-sm">Loading…</div>
@@ -34,7 +66,7 @@ export default function LoginGate({ children }) {
     );
   }
 
-  if (!session) {
+  if (!userId) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
         <form onSubmit={handleLogin} className="bg-white rounded-lg shadow-lg p-8 w-full max-w-sm">
@@ -73,5 +105,8 @@ export default function LoginGate({ children }) {
     );
   }
 
-  return children;
+  // A different account starts a fresh calculator; a refreshed token does not.
+  return <React.Fragment key={userId}>{React.Children.map(children, child =>
+    React.isValidElement(child) && typeof child.type !== 'string' ? React.cloneElement(child, {reportUserId: userId}) : child
+  )}</React.Fragment>;
 }
