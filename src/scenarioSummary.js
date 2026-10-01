@@ -101,6 +101,7 @@ export function computeScenarioSummary(data) {
     accumulationLumpSums: d.accumulationLumpSums ?? [],
     retirementLumpSums: d.retirementLumpSums ?? [],
     getSuperForYear, inflateSuper,
+    cashflowMode: d.cashflowMode || 'annual',
     cashMonths: recSettings.cashMonths ?? 4.5
   };
 
@@ -113,6 +114,7 @@ export function computeScenarioSummary(data) {
   const maxSustainableIncome = solveMaxIncome(simParams, legacyTarget);
 
   return {
+    cashflowMode: d.cashflowMode || 'annual',
     clientName: d.clientName || '', partnerName: d.partnerName || '',
     clientAge, partnerAge, retirementAge, partnerRetirementAge, yearsUntilRetirement, yearsUntilFullRetirement, projectionYears,
     totalPortfolio, portfolioAtRetirement, superAtRetirement,

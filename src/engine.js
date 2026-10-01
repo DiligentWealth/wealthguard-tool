@@ -1,3 +1,4 @@
+import { newRecoveryState, runQuarterlyYear, quarterlyLumpWithdrawal } from './quarterlyRules.js';
 // WealthGuard annual cash-flow model. Monetary inputs are NZD.
 export const INFLATION_RATE = 0.02;
 const DEFAULT_VOLATILITIES = { incomeGenerator: 6, steadyGrowth: 10, strategicGrowth: 14 };
@@ -46,12 +47,16 @@ export function runSimulation(params) {
     agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
     badFirstYearEnabled = false, badFirstYearShockPercent = -20,
     accumulationLumpSums = [], retirementLumpSums = [],
-    getSuperForYear, inflateSuper, cashMonths
+    getSuperForYear, inflateSuper, cashMonths, cashflowMode = 'annual'
   } = params;
 
   if (!Number.isInteger(yearsUntilRetirement) || yearsUntilRetirement < 0 || yearsUntilRetirement > 120 ||
       !Number.isInteger(projectionYears) || projectionYears < 1 || projectionYears > 120) throw new Error('Invalid projection duration.');
   for (const v of [totalPortfolio, annualIncome, annualContribution]) if (!Number.isFinite(v) || v < 0) throw new Error('Invalid cash-flow amount.');
+  if (!['annual','quarterly'].includes(cashflowMode)) throw new Error('Invalid cash-flow model.');
+  const quarterly = cashflowMode === 'quarterly';
+  const recovery = newRecoveryState();
+  let termTarget = 0;
   const data = [];
 
   // Normalise allocations so the FULL portfolio is always deployed, treating the
@@ -86,6 +91,8 @@ export function runSimulation(params) {
   let incomeTarget = (yearsUntilRetirement === 0)
     ? accessibleInitial * (allocations.incomePortfolio / 100)
     : 0;
+
+  termTarget = termDep;
 
   // Pull `amount` proportionally from Balanced and Growth, return actual amount drawn
   const takeFromBalancedGrowth = (amount) => {
@@ -186,6 +193,7 @@ export function runSimulation(params) {
           termDep += k.amount * weights.termDeposit / 100;
           income += k.amount * weights.incomePortfolio / 100;
           incomeTarget += k.amount * weights.incomePortfolio / 100;
+          if (quarterly) termTarget += k.amount * weights.termDeposit / 100;
         }
         k.amount = 0;
       }
@@ -199,6 +207,7 @@ export function runSimulation(params) {
       balanced = total * (allocations.balancedPortfolio / 100);
       growth   = total * (allocations.growthPortfolio / 100);
       incomeTarget = income;
+      termTarget = termDep;
     }
 
     // Record this year's opening state
@@ -253,7 +262,11 @@ export function runSimulation(params) {
       for (const ls of retirementLumpSums) {
         if (ls.yearFromRetirement === yearsInto && ls.amount) {
           if (ls.type === 'withdrawal') {
-            entry.lumpSumShortfall += ls.amount - retireCascade(ls.amount);
+            if (quarterly) {
+              const state = {cash,termDep,income,balanced,growth};
+              entry.lumpSumShortfall += ls.amount - quarterlyLumpWithdrawal(state,recovery,ls.amount);
+              ({cash,termDep,income,balanced,growth} = state);
+            } else entry.lumpSumShortfall += ls.amount - retireCascade(ls.amount);
           } else {
             // Deposit split by retirement allocation
             cash     += ls.amount * (allocations.cashSavings / 100);
@@ -261,6 +274,10 @@ export function runSimulation(params) {
             income   += ls.amount * (allocations.incomePortfolio / 100);
             balanced += ls.amount * (allocations.balancedPortfolio / 100);
             growth   += ls.amount * (allocations.growthPortfolio / 100);
+            if (quarterly) {
+              incomeTarget += ls.amount * allocations.incomePortfolio / 100;
+              termTarget += ls.amount * allocations.termDeposit / 100;
+            }
           }
         }
       }
@@ -300,11 +317,13 @@ export function runSimulation(params) {
     const incomeReturnPct = returns.incomeGenerator + (stochastic && isRetired ?
       volatilities.incomeGenerator * (0.5 * z + Math.sqrt(0.75) * randn()) : 0);
     const grow = (amount, pct) => amount * Math.max(0, 1 + pct / 100);
+    if (!quarterly || !isRetired) {
     cash = grow(cash, isRetired ? returns.cashSavings : accRet.cashSavings);
     termDep = grow(termDep, returns.capitalPreservation);
     income = grow(income, incomeReturnPct);
     balanced = grow(balanced, balancedReturnPct);
     growth = grow(growth, growthReturnPct);
+    }
     for (const k of locked) {
       if (year < k.yearsUntilAccess) {
         if (year < k.contributionYears) k.amount += k.annualContribution;
@@ -345,9 +364,21 @@ export function runSimulation(params) {
       const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper - employmentIncome);
       entry.employmentIncome = Math.round(employmentIncome);
 
+      let actual;
+      if (quarterly) {
+        const result=runQuarterlyYear({state:{cash,termDep,income,balanced,growth},recovery,
+          annualReturns:{cash:returns.cashSavings,termDep:returns.capitalPreservation,
+            income:incomeReturnPct,balanced:balancedReturnPct,growth:growthReturnPct},
+          annualNeed:drawdownNeeded,incomeTarget,termTarget,record:!stochastic});
+        ({cash,termDep,income,balanced,growth}=result.state);
+        actual=result.actual;
+        entry.quarters=result.quarters;
+        entry.incomeRefill=result.incomeRefill;
+        entry.termRefill=result.termRefill;
+      } else {
       // 1. Draw expenses through the cascade — protective (down-year) cascade in the
       // shock year, normal cascade otherwise (Cash → Income → B+G → TD).
-      const actual = isDownYear ? retireCascadeDown(drawdownNeeded) : retireCascade(drawdownNeeded);
+      actual = isDownYear ? retireCascadeDown(drawdownNeeded) : retireCascade(drawdownNeeded);
 
       // 2. Replenish Cash to target from Income, then B+G (not TD) — skipped in the
       // shock year so growth isn't touched to top up cash right after a market drop.
@@ -358,7 +389,10 @@ export function runSimulation(params) {
         refillIncome(incomeTarget);
       }
 
+      }
+
       entry.shortfall = Math.max(0, drawdownNeeded - actual);
+      if (quarterly && entry.shortfall < 1e-7) entry.shortfall = 0;
       cumulativeDrawdown += actual;
       entry.drawdownRequired = Math.round(drawdownNeeded);
       entry.drawdownActual   = Math.round(actual);

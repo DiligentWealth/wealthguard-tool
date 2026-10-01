@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { Download, Save, FolderOpen, Trash2, Plus, X, Sparkles, AlertTriangle, Dices, FileDown, FileUp, GitCompare } from 'lucide-react';
 import { SUPER_RATES_NET_M, SUPER_RATES_GROSS } from './scenarioSummary';
+import { QUARTERLY_RULES_TEXT } from './quarterlyRules';
 import { buildComparison } from './comparison';
 import { HORIZONS, brandAsset } from './brand';
 import { buildReportHTML, loadReportAssets } from './report';
@@ -202,6 +203,7 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
 
 export default function WealthGuardTool() {
   // --- Client info ---
+  const [cashflowMode, setCashflowMode] = useState('quarterly');
   const [clientName, setClientName]       = useState('');
   const [partnerName, setPartnerName]     = useState('');
   const [clientAge, setClientAge]         = useState(60);
@@ -635,7 +637,7 @@ export default function WealthGuardTool() {
     agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
     badFirstYearEnabled, badFirstYearShockPercent,
     accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
-    cashMonths: recSettings.cashMonths
+    cashMonths: recSettings.cashMonths, cashflowMode
   }), [lockedKiwiSaver, totalPortfolio, allocations, accumulationAllocations, returns,
       accumulationReturns,
       yearsUntilRetirement, yearsUntilClientRetirement, yearsUntilPartnerRetirement,
@@ -646,7 +648,7 @@ export default function WealthGuardTool() {
       agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
       badFirstYearEnabled, badFirstYearShockPercent,
       accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
-      recSettings.cashMonths]);
+      recSettings.cashMonths, cashflowMode]);
 
   const projectionData = useMemo(
     () => runSimulation({ ...simulationParams, annualIncome }),
@@ -770,7 +772,7 @@ export default function WealthGuardTool() {
     const portfolio = accessibleAtRetirement;
     if (portfolio <= 0 || annualIncome <= 0) return;
     // Inflate today's required income to the first year of retirement
-    const expensesAtRetirement = annualIncome * Math.pow(1 + 0.02, yearsUntilRetirement);
+    const expensesAtRetirement = (cashflowMode === 'quarterly' ? firstYearDrawdown : annualIncome) * Math.pow(1 + 0.02, yearsUntilRetirement);
     const cashAmt = expensesAtRetirement * (recSettings.cashMonths / 12);
     const tdAmt   = expensesAtRetirement * recSettings.tdYears;
 
@@ -808,7 +810,7 @@ export default function WealthGuardTool() {
           incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
           agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
           accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
-          cashMonths: recSettings.cashMonths,
+          cashMonths: recSettings.cashMonths, cashflowMode,
           downYearThreshold: mcSettings.downYearThreshold
         };
         const n = Math.max(100, Math.min(5000, Math.round(mcSettings.numSims) || 1000));
@@ -840,7 +842,7 @@ export default function WealthGuardTool() {
 
   // Scenario management
   const snapshot = () => ({
-    clientName, partnerName, clientAge, partnerAge, retirementAge, partnerRetirementAge,
+    cashflowMode, clientName, partnerName, clientAge, partnerAge, retirementAge, partnerRetirementAge,
     livingSituation, useGrossSuper, inflateSuper, clientSuperIneligible, partnerSuperIneligible,
     currentInvestments, cash, termDeposits, cashBucket, termDepositsBucket,
     projectionYears, annualIncome, contributionAmount, contributionFrequency, clientWorkingIncome, partnerWorkingIncome,
@@ -870,6 +872,7 @@ export default function WealthGuardTool() {
 
   const restore = (s) => {
     validateScenario(s);
+    setCashflowMode(s.cashflowMode || 'annual');
     setReportDetails({kind:s.reportDetails?.kind === 'proposal' ? 'proposal' : 'review',goals:s.reportDetails?.goals || '',commentary:s.reportDetails?.commentary || '',adviceReference:s.reportDetails?.adviceReference || ''});
     const restoredInvestments = [...(s.currentInvestments ?? []), ...[1,2].filter(id => !(s.currentInvestments ?? []).some(i => i.id === id)).map(id => ({id,label:'',amount:0,bucket:''}))];
     const joint = (s.partnerName || '').trim() !== '';
@@ -1341,9 +1344,15 @@ export default function WealthGuardTool() {
         </div>
 
         <div className="bg-white border border-blue-200 rounded-lg p-4 mb-6 text-sm">
-          <p><strong>Planning basis:</strong> Income and care costs are entered in today's NZD and inflated from today at 2% p.a. Returns must be net of all fund, platform and advice fees and investment tax. Contributions and lump sums enter at the start of each year; spending is drawn at year end.</p>
+          <label className="block mb-3 font-semibold">Calculation mode
+            <select aria-label="Calculation mode" value={cashflowMode} onChange={e=>setCashflowMode(e.target.value)} className="ml-3 border rounded px-2 py-1 font-normal">
+              <option value="quarterly">WealthGuard quarterly — test version</option>
+              <option value="annual">Original annual model — comparison</option>
+            </select>
+          </label>
+          <p><strong>Planning basis:</strong> Income and care costs are entered in today's NZD and inflated from today at 2% p.a. Returns must be net of all fund, platform and advice fees and investment tax. {cashflowMode === 'quarterly' ? 'Retirement spending is paid monthly, with quarterly Cash Savings transfers. Contributions and one-off payments remain at the start of their selected model year. Annual returns are converted to effective monthly rates; annual simulated market paths are smoothed within each year.' : 'The projection uses annual steps: contributions and one-off deposits or withdrawals are applied at the start of the selected year, followed by investment returns and then regular retirement spending.'}</p>
           <p className="mt-2">KiwiSaver stays locked until each person's age 65 and uses the accumulation strategy until then. Household retirement spending starts when the first person retires. Enter net working income available for household spending to offset the drawdown until that person also retires; blank amounts mean no wage offset. Cash and term-deposit returns are fixed assumptions, not guarantees.</p>
-          <p className="mt-2 no-print"><strong>Scenario saving:</strong> {storageMode === 'local' ? 'Local review mode — saved only in this browser. Download JSON backups; cloud sharing is not connected.' : 'Supabase connected — access depends on your existing authentication and database policies.'}</p>
+          {cashflowMode === 'quarterly' ? <p className="mt-2">{QUARTERLY_RULES_TEXT}</p> : <p className="mt-2"><strong>Bucket replenishment:</strong> Quarterly Cash Savings top-ups in the strategy are approximated by one annual refill in this projection. After regular spending, Cash Savings is refilled from Income Generator first, then the growth buckets if needed. Income Generator is then topped up towards its initial retirement target from Steady Growth and Strategic Long Term Growth, using their available balances rather than only that year's gains. These top-ups are skipped in modelled down years.</p> }
           {(Math.abs(totalAllocation-100)>0.1 || (yearsUntilRetirement>0 && Math.abs(totalAccumulationAllocation-100)>0.1)) && <p className="mt-2 text-amber-800">Allocation inputs are treated as relative weights and scaled to 100% for the projection and displayed dollar values. Set them to 100% before finalising advice; zero weights fall back to cash.</p>}
           {(accumulationLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.year) || ls.year < 0 || ls.year >= yearsUntilRetirement)) || retirementLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.yearFromRetirement) || ls.yearFromRetirement < 0 || ls.yearFromRetirement >= projectionYears))) && <p className="mt-2 text-red-700" role="alert">A lump sum falls outside the modelled years or has a fractional year and will not be applied. Correct its timing before using the projection.</p>}
           {useGrossSuper && <p className="mt-2 text-amber-800">Gross NZ Super is being offset against spending without a personal tax calculation. Use the net setting for an after-tax spending plan.</p>}
@@ -1425,6 +1434,7 @@ export default function WealthGuardTool() {
             {comparison.warnings.map(w=><p role="status" className="text-sm text-amber-800 mb-3" key={w}>{w}</p>)}
             <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left p-2">Comparison</th>{comparison.columns.map(c=><th className="p-2 text-right max-w-xs break-words" key={c.id}>{c.label}</th>)}</tr></thead><tbody>{[
               ...(comparison.agesDiffer ? [['Current ages (client / partner)',c=>`${c.summary.clientAge}${c.summary.partnerName ? ` / ${c.summary.partnerAge}` : ''}`],['Ages at comparison end',c=>`${c.summary.clientAge+comparison.endYears}${c.summary.partnerName ? ` / ${c.summary.partnerAge+comparison.endYears}` : ''}`]] : []),
+              ['Calculation mode',c=>c.summary.cashflowMode === 'quarterly' ? 'Quarterly test' : 'Original annual'],
               ['Client retirement age',c=>c.summary.retirementAge],
               ['Partner retirement age',c=>c.summary.partnerName ? c.summary.partnerRetirementAge : '—'],
               ['Retirement years compared',c=>c.summary.projectionYears],
@@ -2496,9 +2506,9 @@ export default function WealthGuardTool() {
                 </div>
                 <p className="text-xs text-slate-500 mt-2">
                   {yearsUntilRetirement > 0 ? (
-                    <>At retirement (with 2% CPI): Cash ≈ ${(annualIncome * Math.pow(1.02, yearsUntilRetirement) * recSettings.cashMonths / 12).toLocaleString(undefined, {maximumFractionDigits: 0})} • TD ≈ ${(annualIncome * Math.pow(1.02, yearsUntilRetirement) * recSettings.tdYears).toLocaleString(undefined, {maximumFractionDigits: 0})}</>
+                    <>At retirement (with 2% CPI): Cash ≈ ${((cashflowMode === 'quarterly' ? firstYearDrawdown : annualIncome) * Math.pow(1.02, yearsUntilRetirement) * recSettings.cashMonths / 12).toLocaleString(undefined, {maximumFractionDigits: 0})} • TD ≈ ${((cashflowMode === 'quarterly' ? firstYearDrawdown : annualIncome) * Math.pow(1.02, yearsUntilRetirement) * recSettings.tdYears).toLocaleString(undefined, {maximumFractionDigits: 0})}</>
                   ) : (
-                    <>Cash ≈ ${(annualIncome * recSettings.cashMonths / 12).toLocaleString(undefined, {maximumFractionDigits: 0})} • TD ≈ ${(annualIncome * recSettings.tdYears).toLocaleString(undefined, {maximumFractionDigits: 0})}</>
+                    <>Cash ≈ ${((cashflowMode === 'quarterly' ? firstYearDrawdown : annualIncome) * recSettings.cashMonths / 12).toLocaleString(undefined, {maximumFractionDigits: 0})} • TD ≈ ${((cashflowMode === 'quarterly' ? firstYearDrawdown : annualIncome) * recSettings.tdYears).toLocaleString(undefined, {maximumFractionDigits: 0})}</>
                   )}
                 </p>
               </div>
@@ -2935,31 +2945,47 @@ export default function WealthGuardTool() {
             ))}
           </div>
 
+          {cashflowMode === 'quarterly' ? <div className="space-y-3 text-sm text-slate-700">
+            <p>{QUARTERLY_RULES_TEXT}</p>
+            <p>Cash and term-deposit allocation recommendations use the first-retirement-year investment income gap after NZ Super and working income. Existing allocations are retained until you choose to apply a recommendation.</p>
+            <details><summary className="cursor-pointer font-semibold">First retirement year: quarterly transfers</summary>
+              <table className="w-full mt-3 text-xs"><thead><tr><th>Quarter</th><th>Required</th><th>From Income</th><th>From Capital Preservation</th><th>Spent</th><th>Shortfall</th></tr></thead><tbody>
+                {(projectionData.find(d=>d.year===yearsUntilRetirement)?.quarters || []).map(q=><tr key={q.quarter}>{[q.quarter,q.required,q.fromIncome,q.fromTerm,q.spent,q.shortfall].map((v,i)=><td className="p-2 text-right" key={i}>{i===0?v:`$${Math.round(v).toLocaleString()}`}</td>)}</tr>)}
+              </tbody></table>
+            </details>
+            <details><summary className="cursor-pointer font-semibold">Annual funding and reserve replenishment</summary>
+              <table className="w-full mt-3 text-xs"><thead><tr><th>Retirement year</th><th>From Income</th><th>From reserve</th><th>Income refilled</th><th>Reserve restored</th><th>Spending shortfall</th></tr></thead><tbody>
+                {projectionData.filter(d=>d.quarters?.length).map(d=><tr key={d.year}>{[d.year-yearsUntilRetirement+1,d.quarters.reduce((a,q)=>a+q.fromIncome,0),d.quarters.reduce((a,q)=>a+q.fromTerm,0),d.incomeRefill,d.termRefill,d.shortfall].map((v,i)=><td className="p-2 text-right" key={i}>{i===0?v:`$${Math.round(v).toLocaleString()}`}</td>)}</tr>)}
+              </tbody></table>
+            </details>
+          </div> : <>
           {/* Detailed flow */}
           <div className="space-y-3 text-sm text-slate-700">
             <div className="flex gap-3 items-start">
               <div className="shrink-0 w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center text-yellow-700 font-bold text-sm">1</div>
               <div>
                 <strong>You spend from Cash Savings.</strong> Your monthly expenses are paid from the Cash bucket, which
-                holds roughly {recSettings.cashMonths} months' worth of living costs — enough that short-term market
-                movements never affect your day-to-day spending.
+                targets roughly {recSettings.cashMonths} months' worth of living costs. This aims to reduce the need to
+                sell longer-term investments to meet day-to-day spending during short-term market fluctuations.
               </div>
             </div>
             <div className="flex gap-3 items-start">
               <div className="shrink-0 w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-sm">2</div>
               <div>
-                <strong>Cash is refilled from Income Generator.</strong> Every quarter, we top up Cash from the Income
-                Generator bucket. This bucket is made up of dividend-producing and interest-bearing investments designed
-                to deliver reliable income without heavy volatility.
+                <strong>Cash is refilled from Income Generator.</strong> In practice, the strategy uses quarterly Cash
+                top-ups from Income Generator. This projection approximates those transfers with an annual refill after
+                regular spending. Income Generator may include dividend-producing and interest-bearing investments;
+                its income and value can fluctuate.
               </div>
             </div>
             <div className="flex gap-3 items-start">
               <div className="shrink-0 w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-sm">3</div>
               <div>
-                <strong>Income Generator is refilled from Steady Growth and Strategic Long Term Growth.</strong> Once a year, we
-                top up the Income bucket from the two long-term growth buckets. Drawing from them only annually lets
-                them keep compounding for as long as possible, and gives us flexibility to draw more heavily from
-                whichever has performed best.
+                <strong>Income Generator is refilled from Steady Growth and Strategic Long Term Growth.</strong> The model
+                tops it up annually towards its initial retirement target, drawing proportionally from the remaining
+                balances in the two growth buckets. Transfers can include capital as well as investment gains.
+                Cash and Income Generator top-ups are skipped in modelled down years; actual transfers should be reviewed
+                against spending needs and market conditions.
               </div>
             </div>
             <div className="flex gap-3 items-start">
@@ -2979,6 +3005,7 @@ export default function WealthGuardTool() {
             volatility. The buckets work together to protect against what's called "sequence of returns risk" — the
             danger of early retirement losses permanently shrinking your nest egg.
           </div>
+          </>}
         </div>
 
         {/* =============== PORTFOLIO GROWTH CHART =============== */}
@@ -3018,8 +3045,7 @@ export default function WealthGuardTool() {
               <div>
                 <strong>Sequence-of-returns stress test active.</strong> Steady Growth and Strategic Long Term Growth take
                 a {Math.abs(badFirstYearShockPercent)}% hit in the very first year of retirement. Watch how the strategy
-                responds: income is funded from Cash and Capital Preservation that year, so growth assets are never sold
-                at a loss right when the shock hits.
+                responds. {cashflowMode === 'quarterly' ? 'Quarterly transfers still use Income Generator unless all three market buckets are below their peaks. Unrecovered growth buckets are not sold to refill Income Generator.' : 'The annual model changes the withdrawal order to Cash, Capital Preservation, Income Generator, then growth as a last resort.'}
               </div>
             </div>
           )}
@@ -3135,9 +3161,9 @@ export default function WealthGuardTool() {
               </select>
             </div>
             <div>
-              <label className="text-xs text-slate-600 block mb-1">"Down year" threshold (growth return below)</label>
+              <label className="text-xs text-slate-600 block mb-1">Legacy annual "down year" threshold</label>
               <div className="flex items-center gap-1">
-                <input type="number" step="0.5" value={mcSettings.downYearThreshold}
+                <input type="number" step="0.5" value={mcSettings.downYearThreshold} disabled={cashflowMode === 'quarterly'}
                   onChange={(e) => updateMcSetting('downYearThreshold', e.target.value)}
                   className="w-full px-2 py-1 border border-slate-300 rounded text-sm"/>
                 <span className="text-sm">%</span>
@@ -3153,12 +3179,7 @@ export default function WealthGuardTool() {
               </div>
             )}
             <div className="text-xs text-slate-500 flex items-end pb-1">
-              When a growth bucket returns below the threshold, income is drawn from the safe buckets instead of selling growth.
-              {yearsUntilRetirement > 0 && (
-                <> {mcAccumulationEnabled
-                  ? ' Accumulation years are also randomised.'
-                  : ' Accumulation years grow smoothly; only retirement is randomised.'}</>
-              )}
+              {cashflowMode === 'quarterly' ? 'Quarterly test mode uses previous-peak recovery rules; the legacy down-year threshold does not apply.' : 'In the annual model, a growth return below the threshold changes the withdrawal order and skips bucket refills.'}
             </div>
           </div>
 
@@ -3294,7 +3315,7 @@ export default function WealthGuardTool() {
         {/* =============== ABOUT =============== */}
         <div className="mt-8 bg-slate-100 rounded-lg p-6 no-print">
           <h3 className="font-semibold text-slate-800 mb-2">About WealthGuard</h3>
-          <p className="text-sm text-slate-600 mb-4">
+          {cashflowMode === 'quarterly' ? <p className="text-sm text-slate-600 mb-4">{QUARTERLY_RULES_TEXT}</p> :           <p className="text-sm text-slate-600 mb-4">
             WealthGuard uses five distinct buckets to maximise growth potential while minimising sequencing risk.
             In retirement, day-to-day spending comes from <strong>Cash Savings</strong>, which is topped up from the
             <strong> Income Generator</strong> bucket (represented by annual cash flows in this model). The Income Generator bucket is in turn
@@ -3302,7 +3323,7 @@ export default function WealthGuardTool() {
             long-term assets continue compounding. <strong>Capital Preservation</strong> (Term Deposits) sits aside
             as a safety net, only drawn on in emergencies or during periods where the invested buckets are in
             a negative position.
-          </p>
+          </p>}
           <div className="border-t pt-4 mt-4 text-sm text-slate-500">
             <p className="font-semibold text-slate-700 mb-2">Diligent Wealth Management</p>
             <p>CONFIDENTIAL — For Diligent Wealth Management and client use only</p>

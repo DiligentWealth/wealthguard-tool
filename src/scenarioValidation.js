@@ -18,6 +18,7 @@ export function validateScenario(s) {
     if (s.reportDetails.kind != null && !['review','proposal'].includes(s.reportDetails.kind)) throw new Error('Invalid report type.');
     for (const k of ['goals','commentary','adviceReference']) if (s.reportDetails[k] != null && typeof s.reportDetails[k] !== 'string') throw new Error('Report text must be text.');
   }
+  if (s.cashflowMode != null && !['annual','quarterly'].includes(s.cashflowMode)) throw new Error('Invalid calculation mode.');
   const money = ['clientWorkingIncome','partnerWorkingIncome','cash','termDeposits','annualIncome','contributionAmount','clientSalary','partnerSalary','legacyTarget','agedCareAnnualCost'];
   const numeric = (v,k,min=0,max=1e12,integer=false) => {
     if (typeof v !== 'number' || !Number.isFinite(v) || v<min || v>max || (integer && !Number.isInteger(v))) throw new Error('Invalid '+k+'.');
