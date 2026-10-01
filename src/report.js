@@ -56,7 +56,8 @@ export function buildReportHTML(p,assets,options={}){
   const years=p.yearsUntilRetirement;
   const last=d[d.length-1];
   const first=d.find(row=>row.year===years)||d[0];
-  const weights=normaliseAllocations(s.allocations);
+  const allocationAmounts=s.cashflowMode === 'quarterly' ? first.bucketBalances : p.retirementAllocDollars;
+  const weights=s.cashflowMode === 'quarterly' ? Object.fromEntries(HORIZONS.map(b=>[b.key,first.accessibleTotal>0 ? (allocationAmounts?.[b.key] || 0)*100/first.accessibleTotal : 0])) : normaliseAllocations(s.allocations);
   const details=p.reportDetails||s.reportDetails||{};
   const business=p.reportBusiness||{};
   const proposal=details.kind==='proposal';
@@ -78,7 +79,7 @@ export function buildReportHTML(p,assets,options={}){
     <p class="lead">WealthGuard organises investments according to the period in which the money may be needed, from nearer-term spending through to longer-term retirement needs.</p>
     <div class="horizon-line">${HORIZONS.map((b,i)=>`<div><span>${String(i+1).padStart(2,'0')}</span><strong>${b.label}</strong></div>`).join('')}</div>
     <div class="allocation-bar">${HORIZONS.map(b=>`<span style="width:${weights[b.key]}%;background:${b.color}"></span>`).join('')}</div>
-    ${table(['Bucket','Purpose','Allocation','Amount'],HORIZONS.map(b=>[b.label,b.purpose,pct(weights[b.key]),money(p.retirementAllocDollars[b.key])]))}
+    ${table(['Bucket','Purpose','Allocation','Amount'],HORIZONS.map(b=>[b.label,b.purpose,pct(weights[b.key]),money(allocationAmounts?.[b.key])]))}
     <p class="note">The figures illustrate the allocation of investments available for withdrawal at first retirement, in future dollars. They may differ from current holdings. Allocations are scaled to 100% in the model. KiwiSaver assumed to remain unavailable at that point (${money(first.lockedKiwiSaver)}) is excluded.</p>
     <h3>Supporting regular spending</h3><p>Regular withdrawals would generally be met first from the investments allocated for nearer-term spending. Your adviser will review how and when those investments should be replenished, taking account of your spending needs, remaining investments and market conditions.</p>
     <p>The purpose of this approach is to keep money available for nearer-term needs while allowing investments intended for later years more time to remain invested. This may reduce the need to sell longer-term investments during weaker markets, but it does not remove investment or withdrawal risk.</p>
@@ -112,6 +113,7 @@ export function buildReportHTML(p,assets,options={}){
     ['Calculation mode',s.cashflowMode === 'quarterly' ? 'WealthGuard quarterly test model' : 'Original annual model'],
     ['Inflation','2% a year from today for retirement spending and additional care costs; actual living costs may increase differently.'],
     ['Regular contributions',`${money(p.annualContribution)} a year; end when the first person retires.`],
+    ['KiwiSaver at access',s.cashflowMode === 'quarterly' ? 'Each person’s available KiwiSaver is split equally between Income Generator, Steady Growth and Strategic Long Term Growth. None is allocated directly to Cash or Capital Preservation.' : 'Released KiwiSaver follows the selected allocation weights.'],
     ['KiwiSaver contributions',`${money(p.annualKsClient)} client; ${money(p.annualKsPartner)} partner a year. Each stops at that person’s retirement in this projection.`],
     ['KiwiSaver access','Assumed at each person’s age 65. Actual eligibility and restrictions need to be confirmed.'],
     ['NZ Super',`${s.useGrossSuper?'Gross':'After-tax M tax-code'} rates dated 1 April 2026; ${s.inflateSuper?'future increases assumed at 2% a year':'payments held fixed'}. Client ${s.clientSuperIneligible?'excluded':'assumed eligible from 65'}; partner ${s.partnerSuperIneligible?'excluded':'assumed eligible from 65 if joint'}.`],

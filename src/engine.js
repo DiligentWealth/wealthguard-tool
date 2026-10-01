@@ -65,9 +65,12 @@ export function runSimulation(params) {
   // (A visible warning is shown in the UI when the entered total isn't 100%.)
   const allocations = normaliseAllocations(rawAllocations);
   const accumulationAllocations = normaliseAllocations(rawAccumulationAllocations);
-  const locked = lockedKiwiSaver.filter(k => k.yearsUntilAccess > 0).map(k => ({ ...k }));
+  const locked = lockedKiwiSaver.filter(k => k.yearsUntilAccess > 0 || (quarterly && k.amount > 0)).map(k => ({ ...k }));
+  let beforeFirstRetirement = yearsUntilRetirement > 0;
+  const earlyReleased = {income:0,balanced:0,growth:0};
   const lockedTotal = () => locked.reduce((sum, k) => sum + k.amount, 0);
   const accessibleInitial = Math.max(0, totalPortfolio - lockedTotal());
+  let allocationBaseTotal = accessibleInitial;
   // Initial bucket allocation — use accumulation if pre-retirement, else retirement
   let cash, termDep, income, balanced, growth;
   if (yearsUntilRetirement > 0) {
@@ -101,6 +104,10 @@ export function runSimulation(params) {
     if (combined <= 0) return 0;
     const fromB = Math.min(balanced, amount * (balanced / combined));
     const fromG = Math.min(growth,   amount * (growth   / combined));
+    if(quarterly && beforeFirstRetirement) {
+      if(balanced>0) earlyReleased.balanced-=fromB*earlyReleased.balanced/balanced;
+      if(growth>0) earlyReleased.growth-=fromG*earlyReleased.growth/growth;
+    }
     balanced -= fromB;
     growth   -= fromG;
     return fromB + fromG;
@@ -177,42 +184,63 @@ export function runSimulation(params) {
     let remaining = need;
     const fromCash = Math.min(cash, remaining);
     cash -= fromCash; remaining -= fromCash;
+    if(quarterly && remaining>0) {
+      const paid=Math.min(income,remaining);
+      if(income>0) earlyReleased.income-=paid*earlyReleased.income/income;
+      income-=paid;remaining-=paid;
+    }
     if (remaining > 0) remaining -= takeFromBalancedGrowth(remaining);
     return need - remaining;
   };
 
-  for (let year = 0; year <= totalDuration; year++) {
-    // KiwiSaver remains outside the spending buckets until age 65.
-    for (const k of locked) {
-      if (year >= k.yearsUntilAccess && k.amount > 0) {
-        const weights = year < yearsUntilRetirement ? accumulationAllocations : allocations;
-        cash += k.amount * weights.cashSavings / 100;
-        balanced += k.amount * weights.balancedPortfolio / 100;
-        growth += k.amount * weights.growthPortfolio / 100;
-        if (year >= yearsUntilRetirement) {
-          termDep += k.amount * weights.termDeposit / 100;
-          income += k.amount * weights.incomePortfolio / 100;
-          incomeTarget += k.amount * weights.incomePortfolio / 100;
-          if (quarterly) termTarget += k.amount * weights.termDeposit / 100;
+  const releaseKiwiSaver = (year) => {
+      for(const k of locked) {
+        if(year>=k.yearsUntilAccess && k.amount>0) {
+          if(quarterly) {
+            const third=k.amount/3;
+            income+=third;balanced+=third;growth+=third;incomeTarget+=third;
+            if(beforeFirstRetirement) for(const key of Object.keys(earlyReleased))earlyReleased[key]+=third;
+          } else {
+            const weights=year<yearsUntilRetirement ? accumulationAllocations : allocations;
+            cash+=k.amount*weights.cashSavings/100;
+            balanced+=k.amount*weights.balancedPortfolio/100;
+            growth+=k.amount*weights.growthPortfolio/100;
+            if(year>=yearsUntilRetirement) {
+              termDep+=k.amount*weights.termDeposit/100;
+              income+=k.amount*weights.incomePortfolio/100;
+              incomeTarget+=k.amount*weights.incomePortfolio/100;
+            }
+          }
+          k.amount=0;
         }
-        k.amount = 0;
       }
-    }
+    };
+
+  for (let year = 0; year <= totalDuration; year++) {
+    // Legacy keeps its original ordering; quarterly releases after retirement
+    // reallocation so an unlock in the same year retains the equal-third split.
+    beforeFirstRetirement=year<yearsUntilRetirement;
+    if(!quarterly)releaseKiwiSaver(year);
     // At retirement: redistribute buckets into retirement allocation
     if (year === yearsUntilRetirement && yearsUntilRetirement > 0) {
-      const total = cash + termDep + income + balanced + growth;
+      const preserved=quarterly ? earlyReleased : {income:0,balanced:0,growth:0};
+      const total = cash + termDep + income + balanced + growth - preserved.income - preserved.balanced - preserved.growth;
+      allocationBaseTotal = total;
       cash     = total * (allocations.cashSavings / 100);
       termDep  = total * (allocations.termDeposit / 100);
-      income   = total * (allocations.incomePortfolio / 100);
-      balanced = total * (allocations.balancedPortfolio / 100);
-      growth   = total * (allocations.growthPortfolio / 100);
+      income   = total * (allocations.incomePortfolio / 100) + preserved.income;
+      balanced = total * (allocations.balancedPortfolio / 100) + preserved.balanced;
+      growth   = total * (allocations.growthPortfolio / 100) + preserved.growth;
       incomeTarget = income;
       termTarget = termDep;
     }
 
+    if(quarterly)releaseKiwiSaver(year);
+
     // Record this year's opening state
     const entry = {
       year,
+      ...(quarterly ? {allocationBaseTotal,bucketBalances:{cashSavings:cash,termDeposit:termDep,incomePortfolio:income,balancedPortfolio:balanced,growthPortfolio:growth}} : {}),
       'Cash Savings':          Math.round(cash),
       'Capital Preservation':  Math.round(termDep),
       'Income Generator':      Math.round(income),
@@ -289,12 +317,18 @@ export function runSimulation(params) {
       (year < yearsUntilClientRetirement ? annualKsClient : 0) + (year < yearsUntilPartnerRetirement ? annualKsPartner : 0);
     if (ksThisYear > 0) {
       const weights = isRetired ? allocations : accumulationAllocations;
-      cash += ksThisYear * weights.cashSavings / 100;
-      balanced += ksThisYear * weights.balancedPortfolio / 100;
-      growth += ksThisYear * weights.growthPortfolio / 100;
-      if (isRetired) {
-        termDep += ksThisYear * weights.termDeposit / 100;
-        income += ksThisYear * weights.incomePortfolio / 100;
+      if(quarterly) {
+        const third=ksThisYear/3;
+        income+=third;balanced+=third;growth+=third;incomeTarget+=third;
+        if(beforeFirstRetirement)for(const key of Object.keys(earlyReleased))earlyReleased[key]+=third;
+      } else {
+        cash += ksThisYear * weights.cashSavings / 100;
+        balanced += ksThisYear * weights.balancedPortfolio / 100;
+        growth += ksThisYear * weights.growthPortfolio / 100;
+        if (isRetired) {
+          termDep += ksThisYear * weights.termDeposit / 100;
+          income += ksThisYear * weights.incomePortfolio / 100;
+        }
       }
     }
 
@@ -323,6 +357,11 @@ export function runSimulation(params) {
     income = grow(income, incomeReturnPct);
     balanced = grow(balanced, balancedReturnPct);
     growth = grow(growth, growthReturnPct);
+    }
+    if(quarterly && beforeFirstRetirement) {
+      earlyReleased.income=grow(earlyReleased.income,incomeReturnPct);
+      earlyReleased.balanced=grow(earlyReleased.balanced,balancedReturnPct);
+      earlyReleased.growth=grow(earlyReleased.growth,growthReturnPct);
     }
     for (const k of locked) {
       if (year < k.yearsUntilAccess) {

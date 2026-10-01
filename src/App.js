@@ -687,13 +687,13 @@ export default function WealthGuardTool() {
   const totalShortfall = projectionData.reduce((sum,d) => sum + d.shortfall + d.lumpSumShortfall, 0);
   // --- Allocation dollar values ---
   // Retirement allocation is shown as at the start of retirement (future value)
-  const retirementAllocDollars = useMemo(() => ({
+  const retirementAllocDollars = useMemo(() => cashflowMode === 'quarterly' ? (projectionData.find(d=>d.year===yearsUntilRetirement)?.bucketBalances || {}) : ({
     cashSavings:      accessibleAtRetirement * (normaliseAllocations(allocations).cashSavings / 100),
     termDeposit:      accessibleAtRetirement * (normaliseAllocations(allocations).termDeposit / 100),
     incomePortfolio:  accessibleAtRetirement * (normaliseAllocations(allocations).incomePortfolio / 100),
     balancedPortfolio:accessibleAtRetirement * (normaliseAllocations(allocations).balancedPortfolio / 100),
     growthPortfolio:  accessibleAtRetirement * (normaliseAllocations(allocations).growthPortfolio / 100)
-  }), [accessibleAtRetirement, allocations]);
+  }), [accessibleAtRetirement, allocations, cashflowMode, projectionData, yearsUntilRetirement]);
 
   // Accumulation allocation is shown as at today's portfolio value
   const accumulationAllocDollars = useMemo(() => ({
@@ -769,7 +769,7 @@ export default function WealthGuardTool() {
   // Apply recommendation — uses largest-remainder rounding so percentages always sum to exactly 100
   // Based on the portfolio value and expenses as-at the first year of retirement
   const applyRecommendation = () => {
-    const portfolio = accessibleAtRetirement;
+    const portfolio = cashflowMode === 'quarterly' ? (projectionData.find(d=>d.year===yearsUntilRetirement)?.allocationBaseTotal || 0) : accessibleAtRetirement;
     if (portfolio <= 0 || annualIncome <= 0) return;
     // Inflate today's required income to the first year of retirement
     const expensesAtRetirement = (cashflowMode === 'quarterly' ? firstYearDrawdown : annualIncome) * Math.pow(1 + 0.02, yearsUntilRetirement);
@@ -2455,12 +2455,13 @@ export default function WealthGuardTool() {
                       </div>
                       <span className="hidden print:block col-span-3 text-sm">{allocations[b.key]}%</span>
                       <div className="col-span-5 text-right text-sm font-medium">
-                        ${retirementAllocDollars[b.key].toLocaleString(undefined, {maximumFractionDigits: 0})}
+                        ${(retirementAllocDollars[b.key] || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
+              {cashflowMode === 'quarterly' && <p className="text-xs text-slate-500 mt-2">Allocation percentages apply to the non-KiwiSaver portfolio. The dollar amounts and chart show the projected actual split at first retirement, including any available KiwiSaver allocated equally to Income Generator and the two growth buckets.</p>}
 
               {/* Recommendation settings */}
               <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 no-print">

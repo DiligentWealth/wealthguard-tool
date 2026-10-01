@@ -47,13 +47,14 @@ test('flow-driven balance changes do not change market recovery indices',()=>{
  const r=newRecoveryState();year({cash:10000,termDep:20000,income:30000,balanced:20000,growth:20000},r);
  for(const k of Object.keys(r)){near(r[k].index,1);near(r[k].peak,1);}
 });
-test('reserve is not a general emergency fallback when markets are recovered',()=>{
+test('reserve funds ongoing spending once all three investment buckets are exhausted',()=>{
  const result=year({cash:0,termDep:50000,income:0,balanced:0,growth:0},newRecoveryState());
- near(result.shortfall,12000);near(result.state.termDep,50000);
+ near(result.shortfall,0);near(result.state.termDep,38000);result.quarters.forEach(q=>near(q.fromTerm,3000));
 });
-test('unrecovered assets remain invested and liquidity shortfall fails funding test',()=>{
- const d=runSimulation({...base,allocations:{cashSavings:0,termDeposit:100,incomePortfolio:0,balancedPortfolio:0,growthPortfolio:0}});
- near(d[0].shortfall,12000);assert.equal(isPlanFunded(d),false);near(d[1].totalExact,100000);
+test('unrecovered growth still blocks reserve fallback when not all investment buckets are exhausted',()=>{
+ const recovery=newRecoveryState();recovery.balanced.index=.8;
+ const result=year({cash:0,termDep:50000,income:0,balanced:20000,growth:0},recovery);
+ near(result.shortfall,12000);near(result.state.termDep,50000);near(result.state.balanced,20000);
 });
 test('one-off withdrawals respect the reserve gate and recovered-growth rule',()=>{
  const state={cash:0,termDep:20000,income:0,balanced:20000,growth:20000},r=newRecoveryState();r.balanced.index=.8;
@@ -89,4 +90,45 @@ test('annual return remains exactly annual when spending is zero',()=>{
 test('quarterly Monte Carlo is finite, non-negative, and orders percentile bands',()=>{
  const r=runMonteCarlo({...base,volatilities:{incomeGenerator:6,steadyGrowth:10,strategicGrowth:14}},100);
  assert.ok(r.successRate>=0&&r.successRate<=1);for(const b of r.bands){assert.ok(Number.isFinite(b.p50));assert.ok(b.p10>=0);assert.ok(b.p10<=b.p25&&b.p25<=b.p50&&b.p50<=b.p75&&b.p75<=b.p90);}
+});
+
+test('reserve funds the remainder of the quarter that exhausts Income Generator',()=>{
+ const result=year({cash:0,termDep:50000,income:1000,balanced:0,growth:0},newRecoveryState());
+ near(result.quarters[0].fromIncome,1000);near(result.quarters[0].fromTerm,2000);near(result.shortfall,0);near(result.state.termDep,39000);
+});
+test('one-off withdrawal can use reserve after investment buckets are depleted',()=>{
+ const state={cash:1000,termDep:50000,income:1000,balanced:0,growth:0};
+ near(quarterlyLumpWithdrawal(state,newRecoveryState(),10000),10000);near(state.termDep,42000);
+});
+test('KiwiSaver unlocking during retirement goes equally to the three investment buckets',()=>{
+ const d=runSimulation({...base,totalPortfolio:90000,annualIncome:0,lockedKiwiSaver:[{amount:90000,yearsUntilAccess:1,contributionYears:0,annualContribution:0}]});
+ near(d[1]['Income Generator'],30000);near(d[1]['Steady Growth'],30000);near(d[1]['Strategic Long Term Growth'],30000);near(d[1]['Cash Savings'],0);near(d[1]['Capital Preservation'],0);near(d[1].totalExact,90000);
+});
+test('unlock in the first-retirement year is not overwritten by retirement allocation',()=>{
+ const d=runSimulation({...base,totalPortfolio:90000,annualIncome:0,yearsUntilRetirement:1,lockedKiwiSaver:[{amount:90000,yearsUntilAccess:1,contributionYears:0,annualContribution:0}]});
+ near(d[1]['Income Generator'],30000);near(d[1]['Steady Growth'],30000);near(d[1]['Strategic Long Term Growth'],30000);near(d[1]['Cash Savings'],0);near(d[1]['Capital Preservation'],0);
+});
+test('KiwiSaver already accessible at the starting age follows equal thirds',()=>{
+ const d=runSimulation({...base,totalPortfolio:90000,annualIncome:0,lockedKiwiSaver:[{amount:90000,yearsUntilAccess:0,contributionYears:0,annualContribution:0}]});
+ near(d[0]['Income Generator'],30000);near(d[0]['Steady Growth'],30000);near(d[0]['Strategic Long Term Growth'],30000);near(d[0].totalExact,90000);near(d[0]['Cash Savings'],0);near(d[0]['Capital Preservation'],0);
+});
+test('early-released KiwiSaver retains its split through later first retirement',()=>{
+ const d=runSimulation({...base,totalPortfolio:90000,annualIncome:0,yearsUntilRetirement:3,lockedKiwiSaver:[{amount:90000,yearsUntilAccess:1,contributionYears:0,annualContribution:0}]});
+ near(d[1]['Income Generator'],30000);near(d[3]['Income Generator'],30000);near(d[3]['Steady Growth'],30000);near(d[3]['Strategic Long Term Growth'],30000);near(d[3]['Cash Savings'],0);near(d[3]['Capital Preservation'],0);
+});
+test('working-person accessible KiwiSaver contributions follow thirds until their retirement',()=>{
+ const d=runSimulation({...base,totalPortfolio:0,annualIncome:0,yearsUntilClientRetirement:0,yearsUntilPartnerRetirement:1,lockedKiwiSaver:[{amount:0,yearsUntilAccess:0,contributionYears:1,annualContribution:3000}]});
+ near(d[1]['Income Generator'],1000);near(d[1]['Steady Growth'],1000);near(d[1]['Strategic Long Term Growth'],1000);near(d[1]['Cash Savings'],0);near(d[1]['Capital Preservation'],0);near(d[2].totalExact,3000);
+});
+test('two clients release their KiwiSaver separately with equal-third allocations',()=>{
+ const d=runSimulation({...base,totalPortfolio:150000,annualIncome:0,projectionYears:3,lockedKiwiSaver:[{amount:60000,yearsUntilAccess:0,contributionYears:0,annualContribution:0},{amount:90000,yearsUntilAccess:2,contributionYears:0,annualContribution:0}]});
+ near(d[0].bucketBalances.incomePortfolio,20000);near(d[0].lockedKiwiSaver,90000);near(d[2].bucketBalances.incomePortfolio,50000);near(d[2].bucketBalances.balancedPortfolio,50000);near(d[2].bucketBalances.growthPortfolio,50000);near(d[2].totalExact,150000);
+});
+test('early release preserves actual compounded balances at first retirement',()=>{
+ const d=runSimulation({...base,totalPortfolio:90000,annualIncome:0,yearsUntilRetirement:3,returns:{...rates,incomeGenerator:2},accumulationReturns:{cashSavings:0,balancedPortfolio:5,growthPortfolio:10},lockedKiwiSaver:[{amount:90000,yearsUntilAccess:1,contributionYears:0,annualContribution:0}]});
+ near(d[3].bucketBalances.incomePortfolio,d[1].bucketBalances.incomePortfolio*1.02**2);near(d[3].bucketBalances.balancedPortfolio,d[1].bucketBalances.balancedPortfolio*1.05**2);near(d[3].bucketBalances.growthPortfolio,d[1].bucketBalances.growthPortfolio*1.1**2);near(d[3].bucketBalances.cashSavings,0);near(d[3].bucketBalances.termDeposit,0);
+});
+test('withdrawals from early released KiwiSaver do not get added back at retirement',()=>{
+ const d=runSimulation({...base,totalPortfolio:90000,annualIncome:0,yearsUntilRetirement:3,accumulationLumpSums:[{year:2,amount:15000,type:'withdrawal'}],lockedKiwiSaver:[{amount:90000,yearsUntilAccess:1,contributionYears:0,annualContribution:0}]});
+ near(d[3].totalExact,75000);near(d[3].bucketBalances.incomePortfolio,15000);near(d[3].bucketBalances.balancedPortfolio,30000);near(d[3].bucketBalances.growthPortfolio,30000);
 });
