@@ -1073,7 +1073,16 @@ export default function WealthGuardTool() {
     try {
       const assets = await loadReportAssets();
       const html = buildReportHTML(payload, assets, { appendix: reportAppendix });
-      if (reportWindow) { reportWindow.document.open(); reportWindow.document.write(html); reportWindow.document.close(); }
+      if (reportWindow) {
+        // Load a complete document rather than replacing the about:blank popup in place.
+        if (reportWindow.closed) throw new Error('The report tab was closed. Open the report again.');
+        const reportURL = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+        try { reportWindow.location.replace(reportURL); }
+        catch (e) { URL.revokeObjectURL(reportURL); throw e; }
+        // Embedded fonts/images need no later requests to this URL. Keep it alive
+        // for slow loads before releasing it; the loaded tab remains printable.
+        setTimeout(() => URL.revokeObjectURL(reportURL), 10 * 60 * 1000);
+      }
       else {
         const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
         const link = document.createElement('a'); link.href = url;
@@ -1290,7 +1299,7 @@ export default function WealthGuardTool() {
           <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-6 flex-wrap">
               <img src={brandAsset('diligent-logo.png')} alt="Diligent Wealth" className="w-48 md:w-60 h-auto" />
-              <div className="md:border-l md:border-slate-200 md:pl-6"><div className="wg-wordmark">WEALTHGUARD™</div><p className="text-xs text-slate-500 mt-1">Investment bucketing strategy</p></div>
+              <div className="md:border-l md:border-slate-200 md:pl-6"><img src={brandAsset('wealthguard-logo.png')} alt="WealthGuard™" className="w-72 md:w-80 max-w-full h-auto" /><p className="text-xs text-slate-500 mt-1">Investment bucketing strategy</p></div>
             </div>
             <div className="flex gap-2 no-print">
               <button onClick={toggleScenariosPanel}
