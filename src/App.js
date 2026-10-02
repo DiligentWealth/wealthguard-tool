@@ -1370,8 +1370,8 @@ export default function WealthGuardTool({reportUserId}) {
         <div className="bg-white border border-blue-200 rounded-lg p-4 mb-6 text-sm">
           <label className="block mb-3 font-semibold">Calculation mode
             <select aria-label="Calculation mode" value={cashflowMode} onChange={e=>setCashflowMode(e.target.value)} className="ml-3 border rounded px-2 py-1 font-normal">
-              <option value="quarterly">WealthGuard quarterly — test version</option>
-              <option value="annual">Original annual model — comparison</option>
+              <option value="quarterly">Quarterly Income Model</option>
+              <option value="annual">Annual Income Model</option>
             </select>
           </label>
           <p><strong>Planning basis:</strong> Income and care costs are entered in today's NZD and inflated from today at 2% p.a. Returns must be net of all fund, platform and advice fees and investment tax. {cashflowMode === 'quarterly' ? 'Retirement spending is paid monthly, with quarterly Cash Savings transfers. Contributions and one-off payments remain at the start of their selected model year. Annual returns are converted to effective monthly rates; annual simulated market paths are smoothed within each year.' : 'The projection uses annual steps: contributions and one-off deposits or withdrawals are applied at the start of the selected year, followed by investment returns and then regular retirement spending.'}</p>
@@ -1458,7 +1458,7 @@ export default function WealthGuardTool({reportUserId}) {
             {comparison.warnings.map(w=><p role="status" className="text-sm text-amber-800 mb-3" key={w}>{w}</p>)}
             <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left p-2">Comparison</th>{comparison.columns.map(c=><th className="p-2 text-right max-w-xs break-words" key={c.id}>{c.label}</th>)}</tr></thead><tbody>{[
               ...(comparison.agesDiffer ? [['Current ages (client / partner)',c=>`${c.summary.clientAge}${c.summary.partnerName ? ` / ${c.summary.partnerAge}` : ''}`],['Ages at comparison end',c=>`${c.summary.clientAge+comparison.endYears}${c.summary.partnerName ? ` / ${c.summary.partnerAge+comparison.endYears}` : ''}`]] : []),
-              ['Calculation mode',c=>c.summary.cashflowMode === 'quarterly' ? 'Quarterly test' : 'Original annual'],
+              ['Calculation mode',c=>c.summary.cashflowMode === 'quarterly' ? 'Quarterly Income Model' : 'Annual Income Model'],
               ['Client retirement age',c=>c.summary.retirementAge],
               ['Partner retirement age',c=>c.summary.partnerName ? c.summary.partnerRetirementAge : '—'],
               ['Retirement years compared',c=>c.summary.projectionYears],
@@ -3070,7 +3070,7 @@ export default function WealthGuardTool({reportUserId}) {
               <div>
                 <strong>Sequence-of-returns stress test active.</strong> Steady Growth and Strategic Long Term Growth take
                 a {Math.abs(badFirstYearShockPercent)}% hit in the very first year of retirement. Watch how the strategy
-                responds. {cashflowMode === 'quarterly' ? 'Quarterly transfers still use Income Generator unless all three market buckets are below their peaks. Unrecovered growth buckets are not sold to refill Income Generator.' : 'The annual model changes the withdrawal order to Cash, Capital Preservation, Income Generator, then growth as a last resort.'}
+                responds. {cashflowMode === 'quarterly' ? 'Quarterly transfers still use Income Generator unless all three market buckets are below their peaks. Unrecovered growth buckets are not sold to refill Income Generator.' : 'The Annual Income Model changes the withdrawal order to Cash, Capital Preservation, Income Generator, then growth as a last resort.'}
               </div>
             </div>
           )}
@@ -3204,7 +3204,7 @@ export default function WealthGuardTool({reportUserId}) {
               </div>
             )}
             <div className="text-xs text-slate-500 flex items-end pb-1">
-              {cashflowMode === 'quarterly' ? 'Quarterly test mode uses previous-peak recovery rules; the legacy down-year threshold does not apply.' : 'In the annual model, a growth return below the threshold changes the withdrawal order and skips bucket refills.'}
+              {cashflowMode === 'quarterly' ? 'Quarterly Income Model uses previous-peak recovery rules; the legacy down-year threshold does not apply.' : 'In the Annual Income Model, a growth return below the threshold changes the withdrawal order and skips bucket refills.'}
             </div>
           </div>
 
