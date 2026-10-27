@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {buildComparison} from '../src/comparison.js';
+import {computeScenarioSummary} from '../src/scenarioSummary.js';
+import {validateScenario} from '../src/scenarioValidation.js';
+const base={clientName:'Example',clientAge:60,retirementAge:65,projectionYears:20,cash:1e6,annualIncome:10000,clientSuperIneligible:true,returns:{cashSavings:0,capitalPreservation:0,incomeGenerator:0,steadyGrowth:0,strategicGrowth:0},allocations:{cashSavings:100,termDeposit:0,incomePortfolio:0,balancedPortfolio:0,growthPortfolio:0},accumulationAllocations:{cashSavings:100,balancedPortfolio:0,growthPortfolio:0},accumulationReturns:{cashSavings:0,balancedPortfolio:0,growthPortfolio:0}};
+const select=(id,over={})=>({id,label:id,data:{...base,...over}});
+test('three different retirement dates share final year without mutating originals',()=>{
+ const selections=[select('early',{retirementAge:63}),select('current'),select('late',{retirementAge:67})];const before=JSON.stringify(selections);const c=buildComparison(selections);
+ assert.equal(c.endYears,27);assert.equal(c.finalAge,87);assert.deepEqual(c.columns.map(x=>x.summary.projectionYears),[24,22,20]);assert.ok(c.columns.every(x=>x.summary.projectionData.at(-1).year===27));assert.equal(c.chart.length,28);assert.deepEqual(c.differences,[]);assert.equal(JSON.stringify(selections),before);
+ assert.ok(c.columns[0].summary.finalBalance<c.columns[2].summary.finalBalance);
+});
+test('explicit final age controls common end and chart',()=>{const c=buildComparison([select('a'),select('b',{retirementAge:63})],90);assert.equal(c.endYears,30);assert.ok(c.columns.every(x=>x.summary.projectionData.at(-1).year===30));});
+test('joint comparison uses younger current age and separate partner retirement',()=>{const c=buildComparison([select('a',{partnerName:'Partner',partnerAge:55,partnerRetirementAge:65}),select('b',{partnerName:'Partner',partnerAge:55,partnerRetirementAge:63})],90);assert.equal(c.endYears,35);assert.equal(c.columns[1].summary.partnerRetirementAge,63);});
+test('duplicate and impossible end age rejected',()=>{assert.throws(()=>buildComparison([select('a'),select('a')]));assert.throws(()=>buildComparison([select('a'),select('b')],64));assert.throws(()=>buildComparison([select('a'),select('b')],90.5));});
+test('one-off payments outside common period rejected',()=>{assert.throws(()=>buildComparison([select('a'),select('b',{retirementLumpSums:[{id:1,amount:100,yearFromRetirement:20,type:'withdrawal'}]})],80));});
+test('fixed-return comparison honours market stress instead of silently removing it',()=>{const b={...base,allocations:{cashSavings:0,termDeposit:0,incomePortfolio:0,balancedPortfolio:100,growthPortfolio:0}};const c=buildComparison([{id:'a',label:'Base',data:b},{id:'b',label:'Stress',data:{...b,badFirstYearEnabled:true,badFirstYearShockPercent:-20}}]);assert.ok(c.columns[1].summary.finalBalance<c.columns[0].summary.finalBalance);assert.ok(c.differences.includes('First-year market stress'));});
+test('legacy target and spending shortfalls are assessed separately',()=>{const s=computeScenarioSummary({...base,annualIncome:0,legacyTarget:2e6});assert.equal(s.totalShortfall,0);assert.equal(s.legacyMet,false);assert.equal(s.planFunded,false);});
+test('legacy report fields default and invalid report text rejected',()=>{validateScenario(base);validateScenario({...base,reportDetails:{kind:'proposal',goals:'Goal',commentary:'Notes'}});assert.throws(()=>validateScenario({...base,reportDetails:{kind:'other'}}));assert.throws(()=>validateScenario({...base,reportDetails:{goals:42}}));});
+test('equivalent old defaults and event IDs do not create false differences',()=>{const a=select('a');const b=select('b',{clientWorkingIncome:0,partnerWorkingIncome:0,legacyTarget:0,ksEnabled:false,currentInvestments:[{id:1,amount:0,label:''}],reportDetails:{kind:'review'}});assert.deepEqual(buildComparison([a,b]).differences,[]);});
+test('different KiwiSaver ownership is identified even if balances are equal',()=>{const a=select('a',{currentInvestments:[{id:1,amount:100000}]});const b=select('b',{currentInvestments:[{id:3,amount:100000}]});assert.ok(buildComparison([a,b]).differences.includes('Current investments'));});
+
+test('different names and current ages no longer block export and are clearly identified',()=>{const c=buildComparison([select('a'),select('b',{clientName:'Example - earlier retirement',clientAge:59})],90);assert.equal(c.endYears,30);assert.equal(c.columns[1].summary.clientAge,59);assert.equal(c.columns[1].summary.projectionData.at(-1).year,30);assert.ok(c.warnings.length);assert.ok(c.agesDiffer);assert.ok(c.differences.includes('Current ages / household structure'));});
