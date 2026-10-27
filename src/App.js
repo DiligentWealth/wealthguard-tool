@@ -1,3 +1,4 @@
+import ProjectionExplorer from './ProjectionExplorer';
 import { saveReportRecovery, readReportRecovery } from './reportRecovery';
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
@@ -367,6 +368,9 @@ export default function WealthGuardTool({reportUserId}) {
   // --- Scenarios ---
   const [scenarios, setScenarios] = useState([]);
   const [showScenariosPanel, setShowScenariosPanel] = useState(false);
+  const [showCalculationDetails, setShowCalculationDetails] = useState(false);
+  const [projectionReference, setProjectionReference] = useState(null);
+  const [projectionNotice, setProjectionNotice] = useState('');
   const [newScenarioName, setNewScenarioName] = useState('');
   const [showComparePanel, setShowComparePanel] = useState(false);
   const [compareIdA, setCompareIdA] = useState('current');
@@ -874,6 +878,8 @@ export default function WealthGuardTool({reportUserId}) {
 
   const restore = (s) => {
     validateScenario(s);
+    setProjectionReference(null);
+    setProjectionNotice('');
     setCashflowMode(s.cashflowMode || 'annual');
     setReportDetails({kind:s.reportDetails?.kind === 'proposal' ? 'proposal' : 'review',goals:s.reportDetails?.goals || '',commentary:s.reportDetails?.commentary || '',adviceReference:s.reportDetails?.adviceReference || ''});
     const restoredInvestments = [...(s.currentInvestments ?? []), ...[1,2].filter(id => !(s.currentInvestments ?? []).some(i => i.id === id)).map(id => ({id,label:'',amount:0,bucket:''}))];
@@ -1304,13 +1310,13 @@ export default function WealthGuardTool({reportUserId}) {
 
         /* Screen only: give anchored sections a little breathing room when the
            quick-nav sidebar scrolls the page to them. */
-        .nav-anchor { scroll-margin-top: 20px; }
+        .nav-anchor { scroll-margin-top: 84px; }
       `}</style>
 
       {/* =============== QUICK NAV (screen only) =============== */}
-      <nav className="wg-quick-nav no-print hidden xl:flex flex-col gap-1 fixed left-4 top-1/2 -translate-y-1/2 z-40 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 p-2 max-h-[80vh] overflow-y-auto">
+      <nav aria-label="Section navigation" className="wg-quick-nav no-print gap-1 z-40 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 p-2">
         {NAV_SECTIONS.map((s) => (
-          <button key={s.id} onClick={() => scrollToSection(s.id)}
+          <button key={s.id} type="button" aria-current={activeSection === s.id ? 'location' : undefined} onClick={() => scrollToSection(s.id)}
             className={`text-left px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
               activeSection === s.id ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
             }`}>
@@ -1319,7 +1325,7 @@ export default function WealthGuardTool({reportUserId}) {
         ))}
       </nav>
 
-      <div className="max-w-7xl mx-auto">
+      <div className="wg-main max-w-7xl mx-auto">
         {/* =============== HEADER =============== */}
         <div className="bg-white rounded-lg shadow-lg p-6 md:p-8 mb-6">
           <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
@@ -1367,28 +1373,12 @@ export default function WealthGuardTool({reportUserId}) {
           </div>}
         </div>
 
-        <div className="bg-white border border-blue-200 rounded-lg p-4 mb-6 text-sm">
-          <label className="block mb-3 font-semibold">Calculation mode
-            <select aria-label="Calculation mode" value={cashflowMode} onChange={e=>setCashflowMode(e.target.value)} className="ml-3 border rounded px-2 py-1 font-normal">
-              <option value="quarterly">Quarterly Income Model</option>
-              <option value="annual">Annual Income Model</option>
-            </select>
-          </label>
-          <p><strong>Planning basis:</strong> Income and care costs are entered in today's NZD and inflated from today at 2% p.a. Returns must be net of all fund, platform and advice fees and investment tax. {cashflowMode === 'quarterly' ? 'Retirement spending is paid monthly, with quarterly Cash Savings transfers. Contributions and one-off payments remain at the start of their selected model year. Annual returns are converted to effective monthly rates; annual simulated market paths are smoothed within each year.' : 'The projection uses annual steps: contributions and one-off deposits or withdrawals are applied at the start of the selected year, followed by investment returns and then regular retirement spending.'}</p>
-          <p className="mt-2">KiwiSaver stays locked until each person's age 65 and uses the accumulation strategy until then. Household retirement spending starts when the first person retires. Enter net working income available for household spending to offset the drawdown until that person also retires; blank amounts mean no wage offset. Cash and term-deposit returns are fixed assumptions, not guarantees.</p>
-          {cashflowMode === 'quarterly' ? <p className="mt-2">{QUARTERLY_RULES_TEXT}</p> : <p className="mt-2"><strong>Bucket replenishment:</strong> Quarterly Cash Savings top-ups in the strategy are approximated by one annual refill in this projection. After regular spending, Cash Savings is refilled from Income Generator first, then the growth buckets if needed. Income Generator is then topped up towards its initial retirement target from Steady Growth and Strategic Long Term Growth, using their available balances rather than only that year's gains. These top-ups are skipped in modelled down years.</p> }
-          {(Math.abs(totalAllocation-100)>0.1 || (yearsUntilRetirement>0 && Math.abs(totalAccumulationAllocation-100)>0.1)) && <p className="mt-2 text-amber-800">Allocation inputs are treated as relative weights and scaled to 100% for the projection and displayed dollar values. Set them to 100% before finalising advice; zero weights fall back to cash.</p>}
-          {(accumulationLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.year) || ls.year < 0 || ls.year >= yearsUntilRetirement)) || retirementLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.yearFromRetirement) || ls.yearFromRetirement < 0 || ls.yearFromRetirement >= projectionYears))) && <p className="mt-2 text-red-700" role="alert">A lump sum falls outside the modelled years or has a fractional year and will not be applied. Correct its timing before using the projection.</p>}
-          {useGrossSuper && <p className="mt-2 text-amber-800">Gross NZ Super is being offset against spending without a personal tax calculation. Use the net setting for an after-tax spending plan.</p>}
-          {!planFunded && <p role="alert" className="mt-2 font-semibold text-red-700">Plan does not meet all spending and legacy requirements. Unfunded spending/lump sums: ${Math.round(totalShortfall).toLocaleString()} over the projection.</p>}
-        </div>
-
         {/* =============== SCENARIOS PANEL =============== */}
         {showScenariosPanel && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print border-2 border-slate-700">
+          <div id="saved-scenarios" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print border-2 border-slate-700">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-slate-800">Saved Scenarios</h2>
-              <button onClick={() => setShowScenariosPanel(false)} className="text-slate-500 hover:text-slate-700"><X size={20}/></button>
+              <button aria-label="Close saved scenarios" onClick={() => setShowScenariosPanel(false)} className="text-slate-500 hover:text-slate-700"><X size={20}/></button>
             </div>
             <div className="flex flex-wrap gap-2 mb-4">
               <input type="text" value={newScenarioName} onChange={(e) => setNewScenarioName(e.target.value)}
@@ -1443,6 +1433,24 @@ export default function WealthGuardTool({reportUserId}) {
             )}
           </div>
         )}
+
+        <div className="bg-white border border-blue-200 rounded-lg p-3 mb-4 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3"><label className="font-semibold">Calculation mode
+            <select aria-label="Calculation mode" value={cashflowMode} onChange={e=>setCashflowMode(e.target.value)} className="ml-3 border rounded px-2 py-1 font-normal">
+              <option value="quarterly">Quarterly Income Model</option>
+              <option value="annual">Annual Income Model</option>
+            </select>
+          </label><button type="button" aria-expanded={showCalculationDetails} aria-controls="calculation-details" onClick={()=>setShowCalculationDetails(v=>!v)} className="text-xs text-slate-600 underline">{showCalculationDetails?'Hide planning basis':'Show planning basis'}</button></div>
+          <div id="calculation-details" hidden={!showCalculationDetails} className="mt-3"><p><strong>Planning basis:</strong> Income and care costs are entered in today's NZD and inflated from today at 2% p.a. Returns must be net of all fund, platform and advice fees and investment tax. {cashflowMode === 'quarterly' ? 'Retirement spending is paid monthly, with quarterly Cash Savings transfers. Contributions and one-off payments remain at the start of their selected model year. Annual returns are converted to effective monthly rates; annual simulated market paths are smoothed within each year.' : 'The projection uses annual steps: contributions and one-off deposits or withdrawals are applied at the start of the selected year, followed by investment returns and then regular retirement spending.'}</p>
+          <p className="mt-2">KiwiSaver stays locked until each person's age 65 and uses the accumulation strategy until then. Household retirement spending starts when the first person retires. Enter net working income available for household spending to offset the drawdown until that person also retires; blank amounts mean no wage offset. Cash and term-deposit returns are fixed assumptions, not guarantees.</p>
+          {cashflowMode === 'quarterly' ? <p className="mt-2">{QUARTERLY_RULES_TEXT}</p> : <p className="mt-2"><strong>Bucket replenishment:</strong> Quarterly Cash Savings top-ups in the strategy are approximated by one annual refill in this projection. After regular spending, Cash Savings is refilled from Income Generator first, then the growth buckets if needed. Income Generator is then topped up towards its initial retirement target from Steady Growth and Strategic Long Term Growth, using their available balances rather than only that year's gains. These top-ups are skipped in modelled down years.</p> }
+          </div>
+          {(Math.abs(totalAllocation-100)>0.1 || (yearsUntilRetirement>0 && Math.abs(totalAccumulationAllocation-100)>0.1)) && <p className="mt-2 text-amber-800">Allocation inputs are treated as relative weights and scaled to 100% for the projection and displayed dollar values. Set them to 100% before finalising advice; zero weights fall back to cash.</p>}
+          {(accumulationLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.year) || ls.year < 0 || ls.year >= yearsUntilRetirement)) || retirementLumpSums.some(ls => ls.amount > 0 && (!Number.isInteger(ls.yearFromRetirement) || ls.yearFromRetirement < 0 || ls.yearFromRetirement >= projectionYears))) && <p className="mt-2 text-red-700" role="alert">A lump sum falls outside the modelled years or has a fractional year and will not be applied. Correct its timing before using the projection.</p>}
+          {useGrossSuper && <p className="mt-2 text-amber-800">Gross NZ Super is being offset against spending without a personal tax calculation. Use the net setting for an after-tax spending plan.</p>}
+          {!planFunded && <p role="alert" className="mt-2 font-semibold text-red-700">Plan does not meet all spending and legacy requirements. Unfunded spending/lump sums: ${Math.round(totalShortfall).toLocaleString()} over the projection.</p>}
+        </div>
+
 
         {/* =============== SCENARIO COMPARISON =============== */}
         {showComparePanel && <div className="bg-white rounded-lg border border-blue-200 p-6 mb-6 no-print">
@@ -3042,6 +3050,10 @@ export default function WealthGuardTool({reportUserId}) {
             </span>
           </div>
 
+          <div className="flex justify-end mb-4 no-print"><button type="button" aria-expanded={!!projectionReference} onClick={()=>{setProjectionNotice('');setProjectionReference(projectionReference ? null : snapshot());}} className="px-4 py-2 border border-blue-200 text-blue-900 rounded-lg text-sm">{projectionReference?'Return to current projection':'Explore planning changes'}</button></div>
+          {projectionNotice && <p role="status" className="no-print text-sm text-slate-700 mb-3">{projectionNotice}</p>}
+          {projectionReference && <ProjectionExplorer reference={projectionReference} onClose={()=>setProjectionReference(null)} onApply={input=>{restore(input);setProjectionNotice('Preview applied to the calculator. Save it as a scenario to keep these changes.');}}/>}
+          <div hidden={!!projectionReference}>
           {/* Display & stress-test toggles */}
           <div className="no-print flex flex-wrap gap-3 mb-4">
             <label className="flex items-center gap-2 cursor-pointer text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
@@ -3129,6 +3141,7 @@ export default function WealthGuardTool({reportUserId}) {
               Accumulation phase: years 0–{yearsUntilRetirement - 1} (ages {clientAge}–{clientAge + yearsUntilRetirement - 1}). Retirement phase begins year {yearsUntilRetirement} (age {retirementAge}).
             </p>
           )}
+          </div>
         </div>
 
         {/* =============== INCOME DRAWDOWN CHART =============== */}
@@ -3360,3 +3373,4 @@ export default function WealthGuardTool({reportUserId}) {
     </div>
   );
 }
+

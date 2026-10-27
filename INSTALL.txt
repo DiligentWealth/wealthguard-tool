@@ -1,0 +1,67 @@
+WealthGuard layout and projection explorer update - 27 October 2026
+
+Based on the current main branch of DiligentWealth/wealthguard-tool.
+App.js baseline GitHub blob: 574d2446d4ba02f6d70ad3c6d0678a290de724bf
+(The exact baseline and changed file list are described below; keep a backup of
+any uncommitted local edits before copying replacement files.)
+
+Copy ONLY these FIVE files into the same src paths in your existing repository:
+  src/App.js
+  src/index.css
+  src/scenarioSummary.js
+  src/ProjectionExplorer.jsx (new)
+  src/planningPreview.js (new)
+
+Optional validation files:
+  src/Layout.test.js
+  tests/planningPreview.test.mjs
+
+Do not replace the whole src or public folders. Keep your existing index.js,
+LoginGate.jsx, Supabase configuration, report files, engine, assets, package.json
+and other files. There are no new dependencies. These edits do not change the
+investment engine or saved scenario formats.
+
+What changed:
+1. On screens at least 1100px wide, section navigation is fixed on the left, with
+   reserved space so it cannot cover the calculator. On smaller screens, it stays
+   at the top as a horizontally scrollable sticky strip.
+2. Saved Scenarios opens immediately above Calculation Mode.
+3. Calculation Mode is a compact strip. Show planning basis / Hide planning basis
+   toggles the detailed explanations. Existing validation warnings stay visible.
+4. Portfolio Projection includes Explore planning changes. It compares the plan
+   captured when opened with a temporary what-if plan. Controls cover:
+   - Retirement age for each client, with +/- one-year buttons and age inputs.
+   - Total annual spending including NZ Super.
+   - Reduced later-retirement income, percentage and years after first retirement.
+   - Additional care costs and annual amount, using the recorded start/duration.
+   - The recorded first-retirement-year market shock.
+   - Today's-dollar or future-dollar chart display.
+   The reference and what-if lines use the SAME end date and display final
+   balances, unfunded spending/withdrawals and whether all targets are met.
+
+Preview workflow:
+Load the scenario, go to Charts, and click Explore planning changes. Adjust the
+controls. Reset preview discards temporary edits. Close preview returns to the
+existing graph. Apply preview to calculator updates the main inputs explicitly;
+it adjusts the retirement horizon to retain the common end date. Then Save
+Current under Scenarios to retain it and include it in normal report comparisons.
+Preview changes are not automatically saved or exported in a report.
+Re-run Monte Carlo after applying changes.
+
+Retirement-related events move relative to the new first-retirement date.
+Accumulation payments stay in their recorded years. If an age change would move
+one-off payments outside the modelled period, the preview shows an error and
+blocks applying it rather than silently discarding the payment.
+
+Deployment (Terminal inside your existing Git checkout, after copying files):
+  npm run build
+  git add src/App.js src/index.css src/scenarioSummary.js src/ProjectionExplorer.jsx src/planningPreview.js
+  git commit -m "Improve WealthGuard navigation and planning previews"
+  git push
+After Vercel deploys, reload the app to load the new layout.
+
+Validation: 16 model/comparison tests and 3 React interaction tests passed;
+production build passed. Desktop/mobile CSS rules were reviewed, but actual
+browser scrolling and visual screenshots were not available for verification.
+The React tests use mocked chart rendering; the existing Recharts components
+render the live comparison graph in the app.

@@ -12,7 +12,7 @@ export const SUPER_RATES_GROSS = {
   couple_one: 984.28
 };
 
-export function computeScenarioSummary(data) {
+export function computeScenarioSummary(data, options = {}) {
   const d = data || {};
   const clientAge = d.clientAge ?? 60;
   const partnerAge = d.partnerAge ?? 60;
@@ -111,7 +111,7 @@ export function computeScenarioSummary(data) {
   const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - (inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement)));
 
   // Modelled income ceiling (same binary search as the live app, including legacy target)
-  const maxSustainableIncome = solveMaxIncome(simParams, legacyTarget);
+  const maxSustainableIncome = options.calculateIncomeCeiling === false ? null : solveMaxIncome(simParams, legacyTarget);
 
   return {
     cashflowMode: d.cashflowMode || 'annual',
@@ -127,4 +127,5 @@ export function computeScenarioSummary(data) {
     projectionData
   };
 }
+
 
