@@ -11,7 +11,7 @@ export function GuidedOptional({guided,title,defaultExpanded=false,hidden=false,
 }
 export function GuidedControls({step,onStep,scenario,context}) {
  const index=GUIDED_STEPS.findIndex(x=>x.id===step),current=GUIDED_STEPS[index],check=guidedChecks(scenario,context);
- return <section id="guided-controls" className="wg-guided-controls no-print" aria-label="Guided setup controls"><div className="flex items-center justify-between flex-wrap gap-2"><p className="text-xs uppercase tracking-widest text-slate-500">Optional guided preview · same calculator</p><p className="text-xs text-slate-600">Step {index+1} of {GUIDED_STEPS.length}</p></div>
+ return <section id="guided-controls" className="wg-guided-controls no-print" aria-label="Guided setup controls"><div className="flex items-center justify-between flex-wrap gap-2"><p className="text-xs uppercase tracking-widest text-slate-500">Guided setup · same calculator</p><p className="text-xs text-slate-600">Step {index+1} of {GUIDED_STEPS.length}</p></div>
    <nav aria-label="Guided setup steps"><ol className="wg-guided-steps">{GUIDED_STEPS.map((s,i)=><li key={s.id}><button type="button" aria-current={s.id===step?'step':undefined} onClick={()=>onStep(s.id)}><span>{String(i+1).padStart(2,'0')}</span><strong>{s.label}</strong><small>{check.ready[s.id]?'Inputs present':'Needs review'}</small></button></li>)}</ol></nav>
    <h2 className="font-semibold text-lg">{current.label}</h2><p className="text-sm text-slate-600 mt-1">{current.help}</p><p className="text-xs text-slate-500 mt-2">“Inputs present” is a completeness check, not confirmation that the advice or assumptions are suitable.</p>
  </section>;

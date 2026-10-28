@@ -2654,8 +2654,8 @@ export default function WealthGuardTool({reportUserId}) {
 
         {guided && guidedStep === 'results' && <GuidedReview scenario={snapshot()} context={guidedContext} onStep={goGuidedStep}/>}
         {/* =============== MAX SUSTAINABLE DRAWDOWN =============== */}
-        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} id="sec-maxincome" className="bg-gradient-to-r from-blue-600 to-blue-800 rounded-lg shadow-lg p-6 mb-6 text-white avoid-break nav-anchor">
-          <h2 className="text-xl font-bold mb-3">Maximum Sustainable Income</h2>
+        <div data-guided-step="results" hidden={guided && guidedStep !== 'results'} id="sec-maxincome" className="bg-gradient-to-r from-blue-600 to-blue-800 rounded-lg shadow-lg p-6 mb-6 text-white avoid-break nav-anchor">
+          <h2 className="text-xl font-bold mb-3">Maximum Estimated Income</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <div className="text-xs opacity-80 uppercase tracking-wider">Modelled income ceiling</div>
@@ -2663,13 +2663,13 @@ export default function WealthGuardTool({reportUserId}) {
               <div className="text-xs opacity-80 mt-1">
                 {legacyTarget > 0
                   ? `Leaves ~$${Math.round(legacyTarget).toLocaleString()} at end of year ${projectionYears}`
-                  : `Portfolio depleted at end of year ${projectionYears}`}
+                  : `No minimum remaining balance specified`}
               </div>
             </div>
             <div>
               <div className="text-xs opacity-80 uppercase tracking-wider">Implied first-year drawdown</div>
               <div className="text-3xl font-bold mt-1">${Math.round(maxSustainableDrawdown).toLocaleString()}<span className="text-lg font-normal">/yr</span></div>
-              <div className="text-xs opacity-80 mt-1">After ${Math.round(superAtRetirement).toLocaleString()} super</div>
+              <div className="text-xs opacity-80 mt-1">After NZ Super, working income and other income</div>
             </div>
             <div>
               <div className="text-xs opacity-80 uppercase tracking-wider">Your target income</div>
@@ -2677,16 +2677,15 @@ export default function WealthGuardTool({reportUserId}) {
               <div className={`text-xs mt-1 font-semibold flex items-center gap-1 ${planFunded ? 'text-green-300' : 'text-amber-300'}`}>
                 {planFunded
                   ? `✓ Funded under assumptions (${(maxSustainableIncome > 0 ? (annualIncome / maxSustainableIncome) * 100 : 0).toFixed(0)}% of max)`
-                  : <><AlertTriangle size={14}/> Exceeds sustainable level</>}
+                  : <><AlertTriangle size={14}/> Selected plan targets are not all met</>}
               </div>
             </div>
           </div>
           <p className="text-xs opacity-75 mt-4">
-            The highest annual income this portfolio can sustain through the full {projectionYears}-year retirement
-            {legacyTarget > 0 ? <>, while leaving at least <strong>${Math.round(legacyTarget).toLocaleString()}</strong> remaining for beneficiaries</> : ''}.
-            Income and NZ Super are both increased by 2% each year to keep pace with inflation — so although the first-year figure is shown above, actual drawings grow annually to preserve purchasing power.
-            {agedCareEnabled ? ` This figure also allows for the aged care cost provision from year ${agedCareStartYear} of retirement.` : ''}
-            {inflateSuper ? '' : ' (Super inflation is currently disabled in settings — this will understate sustainability.)'}
+            Estimated maximum total annual retirement spending in today’s dollars, including NZ Super, working income and other income entered for the relevant years. The model checks funding over the full {projectionYears}-year retirement under the selected bucket rules and net return assumptions.
+            {legacyTarget > 0 ? <> It also allows for at least <strong>${Math.round(legacyTarget).toLocaleString()}</strong> remaining at the end of the projection.</> : ''}
+            Spending increases by 2% each year; NZ Super follows your selected inflation setting. This is a fixed-return estimate, not a guaranteed income or a probability of success. Review the Monte Carlo results for variation in market outcomes.
+            {agedCareEnabled ? ` The aged care provision from retirement year ${agedCareStartYear} is included.` : ''}
           </p>
         </div>
 

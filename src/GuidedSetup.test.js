@@ -9,6 +9,7 @@ test('switching between guided and full views preserves names and other income w
  fireEvent.click(screen.getByRole('button',{name:'Add income source'}));fireEvent.change(screen.getByLabelText('Income source 1 amount'),{target:{value:'12000'}});
  fireEvent.click(screen.getByRole('button',{name:'Guided setup'}));
  expect(screen.getByLabelText('Client Name')).toHaveValue('Example client');
+ expect(document.getElementById('sec-maxincome')).not.toBeVisible();
  expect(document.getElementById('sec-investments')).not.toBeVisible();expect(document.getElementById('sec-client')).toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'Full calculator'}));
  expect(screen.getByLabelText('Client Name')).toHaveValue('Example client');expect(screen.getByLabelText('Income source 1 amount')).toHaveValue(12000);
@@ -23,6 +24,7 @@ test('guided steps reveal only their sections and optional income can be expande
  fireEvent.click(screen.getByRole('button',{name:/Other retirement income: rent/}));
  expect(screen.getByRole('button',{name:'Add income source'})).toBeVisible();
  fireEvent.click(within(steps).getByRole('button',{name:/Check & results/}));
+ expect(screen.getByRole('heading',{name:'Maximum Estimated Income'})).toBeVisible();
  expect(screen.getByRole('region',{name:'Plan review checklist'})).toBeVisible();expect(document.getElementById('sec-charts')).toBeVisible();expect(document.getElementById('sec-planning')).not.toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'Full calculator'}));expect(document.getElementById('sec-planning')).toBeVisible();
 });
