@@ -1,3 +1,4 @@
+import {CalculatorViewSwitch, GuidedControls, GuidedFooter, GuidedOptional, GuidedReview} from './GuidedSetup';
 import OtherIncomeEditor from './OtherIncomeEditor';
 import {otherIncomeForYear} from './otherIncome';
 import ProjectionExplorer from './ProjectionExplorer';
@@ -370,6 +371,8 @@ export default function WealthGuardTool({reportUserId}) {
   // --- Scenarios ---
   const [scenarios, setScenarios] = useState([]);
   const [showScenariosPanel, setShowScenariosPanel] = useState(false);
+  const [guided,setGuided] = useState(()=>new URLSearchParams(window.location.search).get('view') === 'guided');
+  const [guidedStep,setGuidedStep] = useState('clients');
   const [otherIncomeSources,setOtherIncomeSources] = useState([]);
   const [showCalculationDetails, setShowCalculationDetails] = useState(false);
   const [projectionReference, setProjectionReference] = useState(null);
@@ -1225,8 +1228,17 @@ export default function WealthGuardTool({reportUserId}) {
   // RENDER
   // =============================================================================
 
+  const guidedContext = {investmentIncomeNeeded:projectionData.some(row=>row.drawdownRequired>0),firstYearDrawdown,firstYearOtherIncomeToday,yearsUntilRetirement,totalShortfall,planFunded,invalidLumpTiming,finalBalance:projectionData[projectionData.length-1]?.Total || 0};
+  const setCalculatorView = value => {
+    setGuided(value);
+    try {const url=new URL(window.location.href);url.searchParams.set('view',value?'guided':'full');window.history.replaceState(null,'',url);} catch {}
+  };
+  const goGuidedStep = step => {
+    setGuidedStep(step);
+    requestAnimationFrame(()=>document.getElementById('guided-controls')?.scrollIntoView({behavior:'smooth',block:'start'}));
+  };
   return (
-    <div className="wealthguard-app min-h-screen p-4 md:p-8">
+    <div className={`wealthguard-app min-h-screen p-4 md:p-8${guided?' wg-guided':''}`}>
       <style>{`
         @font-face{font-family:inter;font-style:normal;font-weight:400;src:url('${brandAsset('fonts/inter-latin-400-normal.woff2')}') format('woff2');}@font-face{font-family:inter;font-style:normal;font-weight:600;src:url('${brandAsset('fonts/inter-latin-600-normal.woff2')}') format('woff2');}@font-face{font-family:inter;font-style:normal;font-weight:700;src:url('${brandAsset('fonts/inter-latin-700-normal.woff2')}') format('woff2');}@font-face{font-family:manrope;font-style:normal;font-weight:400;src:url('${brandAsset('fonts/manrope-latin-400-normal.woff2')}') format('woff2');}@font-face{font-family:manrope;font-style:normal;font-weight:600;src:url('${brandAsset('fonts/manrope-latin-600-normal.woff2')}') format('woff2');}@font-face{font-family:manrope;font-style:normal;font-weight:700;src:url('${brandAsset('fonts/manrope-latin-700-normal.woff2')}') format('woff2');}
         @media print {
@@ -1321,7 +1333,7 @@ export default function WealthGuardTool({reportUserId}) {
       `}</style>
 
       {/* =============== QUICK NAV (screen only) =============== */}
-      <nav aria-label="Section navigation" className="wg-quick-nav no-print gap-1 z-40 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 p-2">
+      <nav hidden={guided} aria-label="Section navigation" className="wg-quick-nav no-print gap-1 z-40 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 p-2">
         {NAV_SECTIONS.map((s) => (
           <button key={s.id} type="button" aria-current={activeSection === s.id ? 'location' : undefined} onClick={() => scrollToSection(s.id)}
             className={`text-left px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
@@ -1333,6 +1345,7 @@ export default function WealthGuardTool({reportUserId}) {
       </nav>
 
       <div className="wg-main max-w-7xl mx-auto">
+        <CalculatorViewSwitch guided={guided} onChange={setCalculatorView}/>
         {/* =============== HEADER =============== */}
         <div className="bg-white rounded-lg shadow-lg p-6 md:p-8 mb-6">
           <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
@@ -1412,6 +1425,7 @@ export default function WealthGuardTool({reportUserId}) {
 
         </div>
 
+        {guided && <GuidedControls step={guidedStep} onStep={goGuidedStep} scenario={snapshot()} context={guidedContext}/>}
         {/* =============== SCENARIOS PANEL =============== */}
         {showScenariosPanel && (
           <div id="saved-scenarios" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print border-2 border-slate-700">
@@ -1473,7 +1487,7 @@ export default function WealthGuardTool({reportUserId}) {
           </div>
         )}
 
-        <div className="bg-white border border-blue-200 rounded-lg p-3 mb-4 text-sm">
+        <div data-guided-step="strategy" hidden={guided && guidedStep !== 'strategy'} className="bg-white border border-blue-200 rounded-lg p-3 mb-4 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-3"><label className="font-semibold">Calculation mode
             <select aria-label="Calculation mode" value={cashflowMode} onChange={e=>setCashflowMode(e.target.value)} className="ml-3 border rounded px-2 py-1 font-normal">
               <option value="quarterly">Quarterly Income Model</option>
@@ -1492,12 +1506,12 @@ export default function WealthGuardTool({reportUserId}) {
 
 
         {/* =============== CLIENT INFO =============== */}
-        <div id="sec-client" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
+        <div data-guided-step="clients" hidden={guided && guidedStep !== 'clients'} id="sec-client" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
           <h2 className="text-xl font-bold text-slate-800 mb-4">Client Information</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Client Name</label>
-              <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)}
+              <label htmlFor="client-name" className="block text-sm font-medium text-slate-700 mb-1">Client Name</label>
+              <input id="client-name" type="text" value={clientName} onChange={(e) => setClientName(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md no-print"/>
               <span className="hidden print:block">{clientName || 'Not specified'}</span>
             </div>
@@ -1631,7 +1645,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== CURRENT INVESTMENTS =============== */}
-        <div id="sec-investments" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
+        <div data-guided-step="assets" hidden={guided && guidedStep !== 'assets'} id="sec-investments" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
           <h2 className="text-xl font-bold text-slate-800 mb-1">Current Investments</h2>
           <p className="text-xs text-slate-500 mb-4">
             Assign each holding to a bucket and the {yearsUntilRetirement > 0 ? 'Accumulation' : 'Retirement'} Phase Allocation percentages
@@ -1707,7 +1721,7 @@ export default function WealthGuardTool({reportUserId}) {
 
         {/* =============== ACCUMULATION ALLOCATION + PIE (if applicable) =============== */}
         {yearsUntilRetirement > 0 && (
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
+          <div data-guided-step="strategy" hidden={guided && guidedStep !== 'strategy'} className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
             <h2 className="text-xl font-bold text-slate-800 mb-4">
               Accumulation Phase Allocation
               <span className={`text-sm font-normal ml-2 ${Math.abs(totalAccumulationAllocation - 100) > 0.1 ? 'text-red-600' : 'text-slate-500'}`}>
@@ -1793,9 +1807,9 @@ export default function WealthGuardTool({reportUserId}) {
         )}
 
         {/* =============== RETIREMENT PLANNING =============== */}
-        <div id="sec-planning" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
+        <div data-guided-step="income" hidden={guided && guidedStep !== 'income'} id="sec-planning" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
           <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
-          <OtherIncomeEditor sources={otherIncomeSources} onChange={setOtherIncomeSources} settings={{yearsUntilRetirement,accumulationLumpSums,retirementLumpSums}} clientAge={clientAge} partnerAge={partnerAge} isJoint={isJoint}/>
+          <GuidedOptional guided={guided} title="Other retirement income: rent, pensions and other sources" defaultExpanded={otherIncomeSources.length > 0} hidden={false}><OtherIncomeEditor sources={otherIncomeSources} onChange={setOtherIncomeSources} settings={{yearsUntilRetirement,accumulationLumpSums,retirementLumpSums}} clientAge={clientAge} partnerAge={partnerAge} isJoint={isJoint}/></GuidedOptional>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -1854,7 +1868,7 @@ export default function WealthGuardTool({reportUserId}) {
           </div>
 
           {/* KiwiSaver contributions (percentage-based, from salary) */}
-          <div className="mt-6 pt-6 border-t border-slate-200">
+          <GuidedOptional guided={guided} title="KiwiSaver contributions (optional)" defaultExpanded={ksEnabled} hidden={false}><div className="mt-6 pt-6 border-t border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="font-semibold text-slate-800">KiwiSaver Contributions</h3>
@@ -1953,10 +1967,10 @@ export default function WealthGuardTool({reportUserId}) {
                 )}
               </div>
             )}
-          </div>
+          </div></GuidedOptional>
 
           {/* Income step-down after N years */}
-          <div className="mt-6 pt-6 border-t border-slate-200">
+          <GuidedOptional guided={guided} title="Reduce spending later in retirement (optional)" defaultExpanded={incomeReductionEnabled} hidden={false}><div className="mt-6 pt-6 border-t border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="font-semibold text-slate-800">Reduce Income in Later Retirement</h3>
@@ -1998,10 +2012,10 @@ export default function WealthGuardTool({reportUserId}) {
                 </div>
               </div>
             )}
-          </div>
+          </div></GuidedOptional>
 
           {/* Aged care cost provision */}
-          <div className="mt-6 pt-6 border-t border-slate-200">
+          <GuidedOptional guided={guided} title="Care costs, gifting and wealth-transfer planning (optional)" defaultExpanded={agedCareEnabled || giftingCalcEnabled || wealthTransferEnabled} hidden={false}><div className="mt-6 pt-6 border-t border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="font-semibold text-slate-800">Aged Care Cost Provision</h3>
@@ -2329,10 +2343,10 @@ export default function WealthGuardTool({reportUserId}) {
               )}
             </div>
             )}
-          </div>
+          </div></GuidedOptional>
 
           {/* Legacy / inheritance target */}
-          <div className="mt-6 pt-6 border-t border-slate-200">
+          <GuidedOptional guided={guided} title="Money to leave at the end (optional)" defaultExpanded={legacyTarget > 0} hidden={false}><div className="mt-6 pt-6 border-t border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="font-semibold text-slate-800">Legacy Target</h3>
@@ -2349,10 +2363,10 @@ export default function WealthGuardTool({reportUserId}) {
                 </p>
               )}
             </div>
-          </div>
+          </div></GuidedOptional>
 
           {/* Lump sums */}
-          <div className="mt-6 pt-6 border-t border-slate-200">
+          <GuidedOptional guided={guided} title="One-off additions, withdrawals and equity releases" defaultExpanded={accumulationLumpSums.length > 0 || retirementLumpSums.length > 0} hidden={false}><div className="mt-6 pt-6 border-t border-slate-200">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Accumulation lump sums */}
               <div>
@@ -2438,16 +2452,16 @@ export default function WealthGuardTool({reportUserId}) {
                 ))}
               </div>
             </div>
-          </div>
+          </div></GuidedOptional>
         </div>
 
-        {projectionData.some(d => d.lockedKiwiSaver > 0) && <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-sm">
+        {projectionData.some(d => d.lockedKiwiSaver > 0) && <div data-guided-step="income" hidden={guided && guidedStep !== 'income'} className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-sm">
           <strong>KiwiSaver access:</strong> At household retirement, ${Math.round(projectionData.find(d => d.year === yearsUntilRetirement)?.lockedKiwiSaver || 0).toLocaleString()} remains locked.
           The retirement allocation below applies to accessible funds only. The total portfolio chart includes locked KiwiSaver.
         </div>}
 
         {/* =============== RETIREMENT ALLOCATION + PIE =============== */}
-        <div id="sec-allocations" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
+        <div data-guided-step="strategy" hidden={guided && guidedStep !== 'strategy'} id="sec-allocations" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
           <div className="flex flex-wrap items-center justify-between mb-4 gap-2">
             <h2 className="text-xl font-bold text-slate-800">
               Retirement Phase Allocation
@@ -2578,7 +2592,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== RETURNS =============== */}
-        <div id="sec-returns" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
+        <GuidedOptional guided={guided} title="Net return assumptions" defaultExpanded={false} hidden={guided && guidedStep !== 'strategy'}><div data-guided-step="strategy" hidden={guided && guidedStep !== 'strategy'} id="sec-returns" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
           <h2 className="text-xl font-bold mb-1">Expected Returns (%)</h2>
           <p className="text-xs text-slate-500 mb-4">Enter returns after all fund, platform and advice fees and investment tax. No separate deductions are made by the model.</p>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -2630,10 +2644,11 @@ export default function WealthGuardTool({reportUserId}) {
               ))}
             </div>
           </div>
-        </div>
+        </div></GuidedOptional>
 
+        {guided && guidedStep === 'results' && <GuidedReview scenario={snapshot()} context={guidedContext} onStep={goGuidedStep}/>}
         {/* =============== MAX SUSTAINABLE DRAWDOWN =============== */}
-        <div id="sec-maxincome" className="bg-gradient-to-r from-blue-600 to-blue-800 rounded-lg shadow-lg p-6 mb-6 text-white avoid-break nav-anchor">
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} id="sec-maxincome" className="bg-gradient-to-r from-blue-600 to-blue-800 rounded-lg shadow-lg p-6 mb-6 text-white avoid-break nav-anchor">
           <h2 className="text-xl font-bold mb-3">Maximum Sustainable Income</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -2670,7 +2685,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== CURRENT PORTFOLIO SUMMARY (screen + print) =============== */}
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
+        <div data-guided-step="assets" hidden={guided && guidedStep !== 'assets'} className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
           <h3 className="text-lg font-bold mb-3">Current Portfolio</h3>
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -2720,7 +2735,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== RETIREMENT PLANNING SUMMARY (print) =============== */}
-        <div className="hidden print:block avoid-break mb-6">
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} className="hidden print:block avoid-break mb-6">
           <div className="bg-white rounded-lg p-6 border border-slate-200">
             <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
             <div className="grid grid-cols-3 gap-4 text-sm mb-4">
@@ -2842,7 +2857,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== YOUR RETIREMENT PICTURE (NARRATIVE) =============== */}
-        <div className="wg-retirement-picture bg-blue-900 text-white border-l-4 border-amber-500 rounded-lg shadow-lg p-6 mb-6 avoid-break">
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} className="wg-retirement-picture bg-blue-900 text-white border-l-4 border-amber-500 rounded-lg shadow-lg p-6 mb-6 avoid-break">
           <h2 className="text-xl font-bold text-slate-800 mb-3 flex items-center gap-2">
             <Sparkles size={20} className="text-amber-600"/> Your Retirement Picture
           </h2>
@@ -2957,10 +2972,10 @@ export default function WealthGuardTool({reportUserId}) {
           </div>
         </div>
 
-        <div className="hidden print:block page-break"></div>
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} className="hidden print:block page-break"></div>
 
         {/* =============== HOW THE DRAWDOWN WORKS =============== */}
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break">
           <h2 className="text-xl font-bold mb-2">How the Drawdown Works</h2>
           <p className="text-sm text-slate-600 mb-5">
             In retirement, the WealthGuard strategy pays your regular living expenses in a specific order designed
@@ -3051,7 +3066,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== PORTFOLIO GROWTH CHART =============== */}
-        <div id="sec-charts" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break wg-card chart-card charts-page nav-anchor">
+        <div data-guided-step="results" hidden={guided && guidedStep !== 'results'} id="sec-charts" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break wg-card chart-card charts-page nav-anchor">
           <div className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
             <h2 className="text-xl font-bold">Portfolio Projection</h2>
             <span className="text-xs text-slate-500">
@@ -3154,7 +3169,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== INCOME DRAWDOWN CHART =============== */}
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break wg-card chart-card">
+        <div data-guided-step="results" hidden={guided && guidedStep !== 'results'} className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break wg-card chart-card">
           <div className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
             <h2 className="text-xl font-bold">Income Drawdown</h2>
             <span className="text-xs text-slate-500">X-axis: year · {isJoint ? 'client / partner age' : 'age'}</span>
@@ -3179,7 +3194,7 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== MONTE CARLO =============== */}
-        <div id="sec-montecarlo" className={`bg-white rounded-lg shadow-lg p-6 mb-6 wg-card nav-anchor ${mcResults ? 'mc-section' : ''}`}>
+        <div data-guided-step="results" hidden={guided && guidedStep !== 'results'} id="sec-montecarlo" className={`bg-white rounded-lg shadow-lg p-6 mb-6 wg-card nav-anchor ${mcResults ? 'mc-section' : ''}`}>
           <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
             <div>
               <h2 className="text-xl font-bold flex items-center gap-2"><Dices size={20} className="text-blue-600"/> Monte Carlo Analysis</h2>
@@ -3354,14 +3369,14 @@ export default function WealthGuardTool({reportUserId}) {
         </div>
 
         {/* =============== PRINT FOOTER =============== */}
-        <div className="hidden print:block mt-6 text-xs text-slate-600">
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} className="hidden print:block mt-6 text-xs text-slate-600">
           <p><strong>Prepared by Diligent Wealth Management</strong> • {new Date().toLocaleDateString('en-NZ')}</p>
           <p className="mt-2">CONFIDENTIAL — This document contains projections and should not be considered financial advice.
           Return assumptions must be net of all fees and investment tax.</p>
         </div>
 
         {/* =============== ABOUT =============== */}
-        <div className="mt-8 bg-slate-100 rounded-lg p-6 no-print">
+        <div data-guided-step="full-only" hidden={guided && guidedStep !== 'full-only'} className="mt-8 bg-slate-100 rounded-lg p-6 no-print">
           <h3 className="font-semibold text-slate-800 mb-2">About WealthGuard</h3>
           {cashflowMode === 'quarterly' ? <p className="text-sm text-slate-600 mb-4">{QUARTERLY_RULES_TEXT}</p> :           <p className="text-sm text-slate-600 mb-4">
             WealthGuard uses five distinct buckets to maximise growth potential while minimising sequencing risk.
@@ -3379,6 +3394,7 @@ export default function WealthGuardTool({reportUserId}) {
             Past performance is not indicative of future results. Please consult with your financial advisor for personalised guidance.</p>
           </div>
         </div>
+        {guided && <GuidedFooter step={guidedStep} onStep={goGuidedStep}/>}
       </div>
     </div>
   );
