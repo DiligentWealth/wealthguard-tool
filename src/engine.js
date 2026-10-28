@@ -1,3 +1,4 @@
+import {otherIncomeForYear} from './otherIncome.js';
 import { newRecoveryState, runQuarterlyYear, quarterlyLumpWithdrawal } from './quarterlyRules.js';
 // WealthGuard annual cash-flow model. Monetary inputs are NZD.
 export const INFLATION_RATE = 0.02;
@@ -46,7 +47,7 @@ export function runSimulation(params) {
     incomeReductionEnabled = false, incomeReductionAfterYears = 15, incomeReductionPercent = 20,
     agedCareEnabled = false, agedCareStartYear = 10, agedCareAnnualCost = 0, agedCareDurationYears = 0,
     badFirstYearEnabled = false, badFirstYearShockPercent = -20,
-    accumulationLumpSums = [], retirementLumpSums = [],
+    accumulationLumpSums = [], retirementLumpSums = [], otherIncomeSources = [],
     getSuperForYear, inflateSuper, cashMonths, cashflowMode = 'annual'
   } = params;
 
@@ -249,7 +250,7 @@ export function runSimulation(params) {
       Total:                   Math.round(cash + termDep + income + balanced + growth + lockedTotal()),
       totalExact: cash + termDep + income + balanced + growth + lockedTotal(),
       accessibleTotal: cash + termDep + income + balanced + growth,
-      lockedKiwiSaver: lockedTotal(), shortfall: 0, lumpSumShortfall: 0,
+      lockedKiwiSaver: lockedTotal(), shortfall: 0, lumpSumShortfall: 0, otherIncome: 0,
       drawdownRequired: 0,
       drawdownActual:   0,
       cumulativeDrawdown: Math.round(cumulativeDrawdown),
@@ -400,7 +401,9 @@ export function runSimulation(params) {
       const workingIncomeToday = (year < yearsUntilClientRetirement ? clientWorkingIncome : 0) +
         (year < yearsUntilPartnerRetirement ? partnerWorkingIncome : 0);
       const employmentIncome = workingIncomeToday * Math.pow(1 + INFLATION_RATE, year);
-      const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper - employmentIncome);
+      const otherIncome = otherIncomeForYear({otherIncomeSources,accumulationLumpSums,retirementLumpSums,yearsUntilRetirement},year,INFLATION_RATE);
+      entry.otherIncome = Math.round(otherIncome);
+      const drawdownNeeded = Math.max(0, inflatedIncome + inflatedAgedCare - yearSuper - employmentIncome - otherIncome);
       entry.employmentIncome = Math.round(employmentIncome);
 
       let actual;
@@ -509,3 +512,4 @@ export function annualKiwiSaver(salary, employeePct, employerPct, esctOverride =
   const esct = esctOverride ?? (base <= 18720 ? 10.5 : base <= 64200 ? 17.5 : base <= 93720 ? 30 : base <= 216000 ? 33 : 39);
   return salary * (employeePct + employerPct * (1-esct/100)) / 100;
 }
+

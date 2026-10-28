@@ -1,3 +1,5 @@
+import {incomeEndYear} from './otherIncome.js';
+import {retirementTimeline} from './engine.js';
 // Reject malformed backups before they reach React or the cash-flow engines.
 export function validateScenario(s) {
   if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('Invalid scenario data.');
@@ -59,5 +61,25 @@ export function validateScenario(s) {
       }
     });
   }
+  if (s.otherIncomeSources != null && !Array.isArray(s.otherIncomeSources)) throw new Error('Other income must be a list.');
+  const otherIds=new Set();
+  const clientYears=Math.max(0,(s.retirementAge??65)-(s.clientAge??60));
+  const partnerYears=Math.max(0,(s.partnerRetirementAge??((s.partnerAge??60)+clientYears))-(s.partnerAge??60));
+  const yearsUntilRetirement=retirementTimeline(clientYears,partnerYears,!!s.partnerName?.trim()).first;
+  for (const source of s.otherIncomeSources||[]) {
+    if (!source || typeof source!=='object' || Array.isArray(source)) throw new Error('Invalid other income entry.');
+    numeric(source.id,'other income ID',0,Number.MAX_SAFE_INTEGER,true);
+    if(otherIds.has(source.id))throw new Error('Duplicate other income ID.');otherIds.add(source.id);
+    if(typeof source.label!=='string')throw new Error('Other income description must be text.');
+    numeric(source.amount,'other income amount');
+    if(!['monthly','annual'].includes(source.frequency))throw new Error('Invalid other income frequency.');
+    numeric(source.startYear,'other income start year',0,240,true);
+    if(source.endYear!=null){numeric(source.endYear,'other income end year',0,240,true);if(source.endYear<source.startYear)throw new Error('Other income must end on or after its start year.');}
+    if(typeof source.inflate!=='boolean')throw new Error('Invalid other income inflation setting.');
+    if(source.endWithDeposit && (typeof source.endWithDeposit!=='string' || !/^(accumulation|retirement):[0-9]+$/.test(source.endWithDeposit)))throw new Error('Invalid linked income deposit.');
+    const end=incomeEndYear(source,{...s,yearsUntilRetirement});
+    if(source.amount>0 && end<source.startYear)throw new Error('Other income starts on or after its linked equity-release deposit. Review the timing.');
+  }
   return s;
 }
+
