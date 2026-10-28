@@ -26,3 +26,23 @@ test('guided steps reveal only their sections and optional income can be expande
  expect(screen.getByRole('region',{name:'Plan review checklist'})).toBeVisible();expect(document.getElementById('sec-charts')).toBeVisible();expect(document.getElementById('sec-planning')).not.toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'Full calculator'}));expect(document.getElementById('sec-planning')).toBeVisible();
 });
+test('income slider stays capped at twice the entered income and final step opens report builder',async()=>{
+ window.history.replaceState(null,'','/?view=guided');render(<App/>);
+ await waitFor(()=>expect(screen.getByRole('navigation',{name:'Guided setup steps'})).toBeInTheDocument());
+ const steps=screen.getByRole('navigation',{name:'Guided setup steps'});
+ fireEvent.click(within(steps).getByRole('button',{name:/Check & results/}));
+ const slider=screen.getByRole('slider',{name:'Try a different required income'});
+ expect(slider).toHaveAttribute('max','120000');
+ fireEvent.change(slider,{target:{value:'120000'}});
+ expect(slider).toHaveValue('120000');expect(slider).toHaveAttribute('max','120000');
+ fireEvent.change(slider,{target:{value:'0'}});expect(slider).toHaveAttribute('max','120000');
+ const build=screen.getByRole('button',{name:'Build client report'});expect(build).toBeEnabled();fireEvent.click(build);
+ expect(screen.getByRole('region',{name:'Branded client report'})).toBeVisible();
+ expect(screen.getByRole('button',{name:'Download report for PDF / Print'})).toBeVisible();
+ fireEvent.click(within(steps).getByRole('button',{name:/Spending & income/}));
+ const label=screen.getByText("Annual Income Required (today's NZD)");
+ const amount=label.parentElement.querySelector('input');
+ fireEvent.change(amount,{target:{value:'112345'}});fireEvent.blur(amount);
+ fireEvent.click(within(steps).getByRole('button',{name:/Check & results/}));
+ expect(slider).toHaveAttribute('max','224690');
+});

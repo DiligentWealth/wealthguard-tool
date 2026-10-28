@@ -242,6 +242,7 @@ export default function WealthGuardTool({reportUserId}) {
   // --- Planning ---
   const [projectionYears, setProjectionYears] = useState(30);
   const [annualIncome, setAnnualIncome]       = useState(60000);
+  const [enteredAnnualIncome, setEnteredAnnualIncome] = useState(60000);
   const [clientWorkingIncome, setClientWorkingIncome] = useState(0);
   const [partnerWorkingIncome, setPartnerWorkingIncome] = useState(0);
   const [contributionAmount, setContributionAmount]   = useState(0);
@@ -680,12 +681,8 @@ export default function WealthGuardTool({reportUserId}) {
   const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - firstYearSuperToday - firstYearOtherIncomeToday);
   const maxSustainableDrawdown = Math.max(0, maxSustainableIncome - firstYearWorkingIncome - firstYearSuperToday - firstYearOtherIncomeToday);
 
-  // Upper bound for the live income slider — generous headroom above whichever is
-  // larger: the sustainable ceiling or the current target, rounded to a clean $10k step.
-  const incomeSliderMax = Math.max(
-    50000,
-    Math.ceil((Math.max(maxSustainableIncome, annualIncome) * 1.5) / 10000) * 10000
-  );
+  // Keep the range anchored to the adviser-entered amount, not slider changes.
+  const incomeSliderMax = Math.max(0, enteredAnnualIncome * 2);
 
   // Portfolio value at the year retirement begins (from the projection).
   // For pre-retirement clients this reflects accumulation growth + contributions + lump sums.
@@ -934,6 +931,7 @@ export default function WealthGuardTool({reportUserId}) {
     setTermDepositsBucket(s.termDepositsBucket ?? '');
     setProjectionYears(s.projectionYears ?? 30);
     setAnnualIncome(s.annualIncome ?? 0);
+    setEnteredAnnualIncome(s.annualIncome ?? 0);
     setClientWorkingIncome(s.clientWorkingIncome ?? 0);
     setPartnerWorkingIncome(s.partnerWorkingIncome ?? 0);
     setContributionAmount(s.contributionAmount ?? 0);
@@ -1237,6 +1235,14 @@ export default function WealthGuardTool({reportUserId}) {
     setGuidedStep(step);
     requestAnimationFrame(()=>document.getElementById('guided-controls')?.scrollIntoView({behavior:'smooth',block:'start'}));
   };
+  const openReportBuilder = () => {
+    setShowReportPanel(true);
+    requestAnimationFrame(()=>{
+      const panel=document.getElementById('report-builder');
+      panel?.scrollIntoView({behavior:'smooth',block:'start'});
+      panel?.focus({preventScroll:true});
+    });
+  };
   return (
     <div className={`wealthguard-app min-h-screen p-4 md:p-8${guided?' wg-guided':''}`}>
       <style>{`
@@ -1368,7 +1374,7 @@ export default function WealthGuardTool({reportUserId}) {
             <p className="text-lg text-slate-600">A more intentional approach to wealth.</p>
             <div className="wg-horizons">{HORIZONS.map((b,i) => <div className="wg-horizon" key={b.key}><span>{String(i+1).padStart(2,'0')}</span><div><strong>{b.label}</strong><small>{b.purpose}</small></div></div>)}</div>
           </div>
-          {showReportPanel && <div className="no-print mt-6 p-5 bg-slate-50 border border-slate-200 rounded-lg">
+          {showReportPanel && <div id="report-builder" role="region" aria-label="Branded client report" tabIndex={-1} className="no-print mt-6 p-5 bg-slate-50 border border-slate-200 rounded-lg">
             <h3 className="font-semibold text-lg text-blue-900">Branded client report</h3>
             <p className="text-sm text-slate-600 mt-2">Includes the current scenario, five horizons, projections and assumptions. Completed Monte Carlo results are included when they match these inputs.</p>
             <label className="block text-sm mt-3">Report type<select aria-label="Report type" value={reportDetails.kind} onChange={e=>setReportDetails(d=>({...d,kind:e.target.value}))} className="block border border-slate-300 rounded-md p-2 mt-1"><option value="review">Client review</option><option value="proposal">Proposed retirement strategy</option></select></label>
@@ -1828,7 +1834,7 @@ export default function WealthGuardTool({reportUserId}) {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Annual Income Required (today's NZD)</label>
-              <MoneyInput value={annualIncome} onChange={setAnnualIncome}
+              <MoneyInput value={annualIncome} onChange={value=>{setAnnualIncome(value);setEnteredAnnualIncome(value);}}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md"/>
             </div>
             <div>
@@ -3124,9 +3130,11 @@ export default function WealthGuardTool({reportUserId}) {
               type="range"
               min={0}
               max={incomeSliderMax}
-              step={1000}
+              aria-describedby="income-slider-help"
+              step={1}
+              disabled={incomeSliderMax === 0}
               value={annualIncome}
-              onChange={(e) => setAnnualIncome(parseFloat(e.target.value) || 0)}
+              onChange={(e) => setAnnualIncome(Math.min(incomeSliderMax,Math.max(0,parseFloat(e.target.value) || 0)))}
               className="w-full accent-blue-600 cursor-pointer"
             />
             <div className="flex items-center justify-between mt-2 text-xs">
@@ -3142,6 +3150,7 @@ export default function WealthGuardTool({reportUserId}) {
               </span>
               <span className="text-slate-400">${incomeSliderMax.toLocaleString()}</span>
             </div>
+            <p id="income-slider-help" className="text-xs text-slate-500 mt-2">Range: $0 to twice the entered retirement income (${enteredAnnualIncome.toLocaleString()}/yr). Change the amount in Spending &amp; income to reset this range. Slider changes apply to the current plan and report.</p>
           </div>
 
           <PrintableChart screenHeight={420} printHeight={330}>
@@ -3394,7 +3403,7 @@ export default function WealthGuardTool({reportUserId}) {
             Past performance is not indicative of future results. Please consult with your financial advisor for personalised guidance.</p>
           </div>
         </div>
-        {guided && <GuidedFooter step={guidedStep} onStep={goGuidedStep}/>}
+        {guided && <GuidedFooter step={guidedStep} onStep={goGuidedStep} onReport={openReportBuilder}/>}
       </div>
     </div>
   );

@@ -16,9 +16,9 @@ export function GuidedControls({step,onStep,scenario,context}) {
    <h2 className="font-semibold text-lg">{current.label}</h2><p className="text-sm text-slate-600 mt-1">{current.help}</p><p className="text-xs text-slate-500 mt-2">“Inputs present” is a completeness check, not confirmation that the advice or assumptions are suitable.</p>
  </section>;
 }
-export function GuidedFooter({step,onStep}) {
+export function GuidedFooter({step,onStep,onReport}) {
  const index=GUIDED_STEPS.findIndex(x=>x.id===step);
- return <div className="wg-guided-footer no-print"><button type="button" disabled={index===0} onClick={()=>onStep(GUIDED_STEPS[index-1].id)}>Back{index>0?`: ${GUIDED_STEPS[index-1].label}`:''}</button><span className="text-xs text-slate-500">Changes remain in the calculator. Save a scenario when ready.</span><button type="button" disabled={index===GUIDED_STEPS.length-1} onClick={()=>onStep(GUIDED_STEPS[index+1].id)}>{index<GUIDED_STEPS.length-1?`Next: ${GUIDED_STEPS[index+1].label}`:'Last step'}</button></div>;
+ return <div className="wg-guided-footer no-print"><button type="button" disabled={index===0} onClick={()=>onStep(GUIDED_STEPS[index-1].id)}>Back{index>0?`: ${GUIDED_STEPS[index-1].label}`:''}</button><span className="text-xs text-slate-500">Changes remain in the calculator. Save a scenario when ready.</span><button type="button" onClick={()=>index===GUIDED_STEPS.length-1?onReport():onStep(GUIDED_STEPS[index+1].id)}>{index<GUIDED_STEPS.length-1?`Next: ${GUIDED_STEPS[index+1].label}`:'Build client report'}</button></div>;
 }
 export function GuidedReview({scenario,context,onStep}) {
  const check=guidedChecks(scenario,context);
@@ -27,6 +27,6 @@ export function GuidedReview({scenario,context,onStep}) {
    <p className="mt-4 text-sm">First retirement is in model year {context.yearsUntilRetirement}. Final investment balance: {money(context.finalBalance)} in future dollars. Unfunded spending and one-off withdrawals: {money(context.totalShortfall)} in future dollars.</p>
    <p className="mt-2 text-sm font-semibold">{context.planFunded?'The selected spending and remaining-balance targets are met in this fixed-return projection.':'The projection does not meet every selected spending or remaining-balance target.'}</p>
    {check.warnings.length ? <ul className="wg-review-warnings">{check.warnings.map((w,i)=><li key={i}><span>{w.text}</span><button type="button" onClick={()=>onStep(w.step)}>Review {GUIDED_STEPS.find(s=>s.id===w.step)?.label.toLowerCase()}</button></li>)}</ul>:<p className="text-sm mt-3">No basic input issues were identified. Check the underlying assumptions with the client.</p>}
-   <p className="text-xs text-slate-500 mt-3">A positive investment balance can coexist with a funding shortfall under the bucket rules. Projections are illustrations, not guarantees. Use the graphs below to explore changes, then save your scenario and export the report from the top of the page.</p>
+   <p className="text-xs text-slate-500 mt-3">A positive investment balance can coexist with a funding shortfall under the bucket rules. Projections are illustrations, not guarantees. Use the graphs below to explore changes, then save your scenario and choose “Build client report” at the bottom of this step.</p>
  </section>;
 }
