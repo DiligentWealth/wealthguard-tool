@@ -1,3 +1,4 @@
+import {otherIncomeForYear} from './otherIncome.js';
 import { runSimulation, solveMaxIncome, makeKiwiSaverPools, annualKiwiSaver, retirementTimeline, isPlanFunded } from './engine.js';
 export const SUPER_RATES_NET_M = {
   single_alone: 1110.30,        // Live alone or with a dependent child
@@ -100,6 +101,7 @@ export function computeScenarioSummary(data, options = {}) {
     badFirstYearShockPercent: d.badFirstYearShockPercent ?? -20,
     accumulationLumpSums: d.accumulationLumpSums ?? [],
     retirementLumpSums: d.retirementLumpSums ?? [],
+    otherIncomeSources: d.otherIncomeSources || [],
     getSuperForYear, inflateSuper,
     cashflowMode: d.cashflowMode || 'annual',
     cashMonths: recSettings.cashMonths ?? 4.5
@@ -108,7 +110,8 @@ export function computeScenarioSummary(data, options = {}) {
   const projectionData = runSimulation({ ...simParams, annualIncome });
   const portfolioAtRetirement = (projectionData.find(p => p.year === yearsUntilRetirement) || {}).Total ?? totalPortfolio;
   const firstYearWorkingIncome = (yearsUntilRetirement < yearsUntilClientRetirement ? clientWorkingIncome : 0) + (yearsUntilRetirement < yearsUntilPartnerRetirement ? partnerWorkingIncome : 0);
-  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - (inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement)));
+  const firstYearOtherIncomeToday = otherIncomeForYear(simParams,yearsUntilRetirement) / Math.pow(1.02,yearsUntilRetirement);
+  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - firstYearOtherIncomeToday - (inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement)));
 
   // Modelled income ceiling (same binary search as the live app, including legacy target)
   const maxSustainableIncome = options.calculateIncomeCeiling === false ? null : solveMaxIncome(simParams, legacyTarget);
@@ -118,7 +121,7 @@ export function computeScenarioSummary(data, options = {}) {
     clientName: d.clientName || '', partnerName: d.partnerName || '',
     clientAge, partnerAge, retirementAge, partnerRetirementAge, yearsUntilRetirement, yearsUntilFullRetirement, projectionYears,
     totalPortfolio, portfolioAtRetirement, superAtRetirement,
-    annualIncome, firstYearDrawdown, maxSustainableIncome, legacyTarget,
+    annualIncome, firstYearDrawdown, firstYearOtherIncomeToday, maxSustainableIncome, legacyTarget,
     accessibleAtRetirement: projectionData.find(p => p.year === yearsUntilRetirement)?.accessibleTotal ?? totalPortfolio,
     totalShortfall: projectionData.reduce((sum,p) => sum + p.shortfall + p.lumpSumShortfall, 0),
     finalBalance: projectionData[projectionData.length-1].Total,
@@ -127,5 +130,6 @@ export function computeScenarioSummary(data, options = {}) {
     projectionData
   };
 }
+
 
 

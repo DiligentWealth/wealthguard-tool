@@ -1,3 +1,5 @@
+import OtherIncomeEditor from './OtherIncomeEditor';
+import {otherIncomeForYear} from './otherIncome';
 import ProjectionExplorer from './ProjectionExplorer';
 import { saveReportRecovery, readReportRecovery } from './reportRecovery';
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
@@ -368,6 +370,7 @@ export default function WealthGuardTool({reportUserId}) {
   // --- Scenarios ---
   const [scenarios, setScenarios] = useState([]);
   const [showScenariosPanel, setShowScenariosPanel] = useState(false);
+  const [otherIncomeSources,setOtherIncomeSources] = useState([]);
   const [showCalculationDetails, setShowCalculationDetails] = useState(false);
   const [projectionReference, setProjectionReference] = useState(null);
   const [projectionNotice, setProjectionNotice] = useState('');
@@ -642,7 +645,7 @@ export default function WealthGuardTool({reportUserId}) {
     incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
     agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
     badFirstYearEnabled, badFirstYearShockPercent,
-    accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
+    accumulationLumpSums, retirementLumpSums, otherIncomeSources, getSuperForYear, inflateSuper,
     cashMonths: recSettings.cashMonths, cashflowMode
   }), [lockedKiwiSaver, totalPortfolio, allocations, accumulationAllocations, returns,
       accumulationReturns,
@@ -653,7 +656,7 @@ export default function WealthGuardTool({reportUserId}) {
       incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
       agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
       badFirstYearEnabled, badFirstYearShockPercent,
-      accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
+      accumulationLumpSums, retirementLumpSums, otherIncomeSources, getSuperForYear, inflateSuper,
       recSettings.cashMonths, cashflowMode]);
 
   const projectionData = useMemo(
@@ -670,8 +673,9 @@ export default function WealthGuardTool({reportUserId}) {
 
   const firstYearWorkingIncome = (yearsUntilRetirement < yearsUntilClientRetirement ? clientWorkingIncome : 0) + (isJoint && yearsUntilRetirement < yearsUntilPartnerRetirement ? partnerWorkingIncome : 0);
   const firstYearSuperToday = inflateSuper ? superAtRetirement : superAtRetirement / Math.pow(1.02, yearsUntilRetirement);
-  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - firstYearSuperToday);
-  const maxSustainableDrawdown = Math.max(0, maxSustainableIncome - firstYearWorkingIncome - firstYearSuperToday);
+  const firstYearOtherIncomeToday = otherIncomeForYear(simulationParams,yearsUntilRetirement) / Math.pow(1.02,yearsUntilRetirement);
+  const firstYearDrawdown = Math.max(0, annualIncome - firstYearWorkingIncome - firstYearSuperToday - firstYearOtherIncomeToday);
+  const maxSustainableDrawdown = Math.max(0, maxSustainableIncome - firstYearWorkingIncome - firstYearSuperToday - firstYearOtherIncomeToday);
 
   // Upper bound for the live income slider — generous headroom above whichever is
   // larger: the sustainable ceiling or the current target, rounded to a clean $10k step.
@@ -815,7 +819,7 @@ export default function WealthGuardTool({reportUserId}) {
           annualKsClient, annualKsPartner,
           incomeReductionEnabled, incomeReductionAfterYears, incomeReductionPercent,
           agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
-          accumulationLumpSums, retirementLumpSums, getSuperForYear, inflateSuper,
+          accumulationLumpSums, retirementLumpSums, otherIncomeSources, getSuperForYear, inflateSuper,
           cashMonths: recSettings.cashMonths, cashflowMode,
           downYearThreshold: mcSettings.downYearThreshold
         };
@@ -858,7 +862,7 @@ export default function WealthGuardTool({reportUserId}) {
     agedCareEnabled, agedCareStartYear, agedCareAnnualCost, agedCareDurationYears,
     giftingCalcEnabled, giftingYearsUntilCare, giftingAlreadyGifted, giftingThresholdCategory, giftingAssetsOverride, giftingNearLimitAnnual, giftingBothApplyingTogether, giftingFarLimitHousehold, giftingThresholds, wealthTransferEnabled, wealthTransferGrowthRate, wealthTransferStrategy, wealthTransferCustomAnnual,
     badFirstYearEnabled, badFirstYearShockPercent, legacyTarget, showTodaysDollars,
-    accumulationLumpSums, retirementLumpSums,
+    accumulationLumpSums, retirementLumpSums, otherIncomeSources,
     allocations, accumulationAllocations, returns, recSettings,
     accumulationReturns, volatilities, mcSettings, mcAccumulationEnabled, reportDetails
   });
@@ -880,6 +884,7 @@ export default function WealthGuardTool({reportUserId}) {
     validateScenario(s);
     setProjectionReference(null);
     setProjectionNotice('');
+    setOtherIncomeSources(s.otherIncomeSources || []);
     setCashflowMode(s.cashflowMode || 'annual');
     setReportDetails({kind:s.reportDetails?.kind === 'proposal' ? 'proposal' : 'review',goals:s.reportDetails?.goals || '',commentary:s.reportDetails?.commentary || '',adviceReference:s.reportDetails?.adviceReference || ''});
     const restoredInvestments = [...(s.currentInvestments ?? []), ...[1,2].filter(id => !(s.currentInvestments ?? []).some(i => i.id === id)).map(id => ({id,label:'',amount:0,bucket:''}))];
@@ -1161,6 +1166,7 @@ export default function WealthGuardTool({reportUserId}) {
         cumulativeDrawdown: openingCumulativeReal,
         employmentIncome: deflate(d.employmentIncome),
         superIncome: deflate(d.superIncome),
+        otherIncome: deflate(d.otherIncome),
         agedCareCost: deflate(d.agedCareCost)
       };
     });
@@ -1172,6 +1178,7 @@ export default function WealthGuardTool({reportUserId}) {
   const drawdownChartData = displayProjectionData.map(d => ({
     year: d.year,
     'Net Working Income': d.employmentIncome,
+    'Other Retirement Income': d.otherIncome,
     'Annual Drawdown': d.drawdownActual,
     'Required Drawdown': d.drawdownRequired,
     'Cumulative Drawdown': d.cumulativeDrawdown
@@ -1371,6 +1378,38 @@ export default function WealthGuardTool({reportUserId}) {
             {reportNotice && <p role="status" className="text-slate-700 text-sm mt-3">{reportNotice}</p>}
             {reportError && <p role="alert" className="text-red-700 text-sm mt-3">{reportError}</p>}
           </div>}
+        {/* =============== SCENARIO COMPARISON =============== */}
+        {showComparePanel && <div id="report-comparison-options" role="region" aria-label="Scenario comparison options" className="bg-white rounded-lg border border-blue-200 p-6 mb-6 no-print">
+          <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Compare retirement scenarios</h2><button aria-label="Close comparison" onClick={()=>setShowComparePanel(false)}><X size={20}/></button></div>
+          <p className="text-sm text-slate-600 mb-4">Choose two or three scenarios. Differences in client details or ages are highlighted for review. All are projected to a common end date; the saved scenarios are not changed.</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">{[[compareIdA,setCompareIdA],[compareIdB,setCompareIdB],[compareIdC,setCompareIdC]].map(([id,setId],i)=><label key={i} className="text-sm">Scenario {['A','B','C'][i]}{i===2?' (optional)':''}<select aria-label={`Scenario ${['A','B','C'][i]}`} value={id} onChange={e=>setId(e.target.value)} className="w-full border border-slate-300 rounded-md p-2 mt-1"><option value="">Select a scenario…</option><option value="current">Current plan</option>{scenarios.map(sc=><option key={sc.id} value={sc.id}>{sc.name}</option>)}</select></label>)}</div>
+          <label className="block text-sm mt-4">Final age for Scenario A’s younger client (or the client if single)<input aria-label="Comparison final age" type="number" min="1" max="360" step="1" value={comparisonEndAge} placeholder={comparison ? String(comparison.finalAge) : 'Automatic'} onChange={e=>setComparisonEndAge(e.target.value)} className="block border border-slate-300 rounded-md p-2 mt-1 w-48"/></label>
+          <p className="text-xs text-slate-500 mt-2">Leave blank to use the latest end date across the selected scenarios. Changing this field affects the comparison only.</p>
+          <label className="flex gap-2 items-center text-sm mt-4"><input type="checkbox" checked={reportComparison} onChange={e=>setReportComparison(e.target.checked)}/> Include comparison in report</label>
+          {comparisonError && <p role="alert" className="text-sm text-amber-800 mt-4">{comparisonError}</p>}
+          {comparison && <div className="mt-5">
+            <p className="text-sm mb-3">Common end: {comparison.endYears} years from today; Scenario A’s younger client is {comparison.finalAge}.</p>
+            {comparison.warnings.map(w=><p role="status" className="text-sm text-amber-800 mb-3" key={w}>{w}</p>)}
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left p-2">Comparison</th>{comparison.columns.map(c=><th className="p-2 text-right max-w-xs break-words" key={c.id}>{c.label}</th>)}</tr></thead><tbody>{[
+              ...(comparison.agesDiffer ? [['Current ages (client / partner)',c=>`${c.summary.clientAge}${c.summary.partnerName ? ` / ${c.summary.partnerAge}` : ''}`],['Ages at comparison end',c=>`${c.summary.clientAge+comparison.endYears}${c.summary.partnerName ? ` / ${c.summary.partnerAge+comparison.endYears}` : ''}`]] : []),
+              ['Calculation mode',c=>c.summary.cashflowMode === 'quarterly' ? 'Quarterly Income Model' : 'Annual Income Model'],
+              ['Client retirement age',c=>c.summary.retirementAge],
+              ['Partner retirement age',c=>c.summary.partnerName ? c.summary.partnerRetirementAge : '—'],
+              ['Retirement years compared',c=>c.summary.projectionYears],
+              ["Annual spending (today’s NZD)",c=>`$${Math.round(c.summary.annualIncome).toLocaleString()}`],
+              ['Portfolio at first retirement (future NZD)',c=>`$${Math.round(c.summary.portfolioAtRetirement).toLocaleString()}`],
+              ['Accessible at first retirement (future NZD)',c=>`$${Math.round(c.summary.accessibleAtRetirement).toLocaleString()}`],
+              ["First-year withdrawal needed (today’s NZD)",c=>`$${Math.round(c.summary.firstYearDrawdown).toLocaleString()}`],
+              ['Projected spending / lump-sum shortfalls (future NZD)',c=>`$${Math.round(c.summary.totalShortfall).toLocaleString()}`],
+              ['Balance at common end date (future NZD)',c=>`$${Math.round(c.summary.finalBalance).toLocaleString()}`],
+              ['Remaining-balance target met?',c=>c.summary.legacyMet?'Yes':'No']
+            ].map(([label,get])=><tr className="border-t" key={label}><td className="p-2 text-slate-600">{label}</td>{comparison.columns.map(c=><td className="p-2 text-right" key={c.id}>{get(c)}</td>)}</tr>)}</tbody></table></div>
+            <div className="h-80 mt-5"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparison.chart} margin={{left:20,right:15,top:10,bottom:10}}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="year"/><YAxis width={80} tickFormatter={v=>`$${Math.round(v/1000)}k`}/><Tooltip formatter={v=>`$${Number(v).toLocaleString()}`}/><Legend/>{comparison.columns.map((c,i)=><Line key={c.id} isAnimationActive={false} type="monotone" dataKey={'scenario'+i} name={c.label} stroke={['#293A61','#f97316','#16a34a'][i]} strokeDasharray={['','7 3','2 3'][i]} strokeWidth={2.5} dot={false}/>)}</LineChart></ResponsiveContainer></div>
+            <p className="text-xs text-slate-500">X-axis: years from today. Values: future NZD. {comparison.differences.length ? `Other inputs differ: ${comparison.differences.join(', ')}.` : 'Retirement dates are the only financial inputs changed; the end date is aligned.'}</p>
+            {comparison.relativeEvents && <p className="text-xs text-slate-500 mt-2">Retirement lump sums, care costs, spending reductions and first-year stress are timed relative to each scenario’s first retirement. Their calendar timing may change when retirement dates change.</p>}
+          </div>}
+        </div>}
+
         </div>
 
         {/* =============== SCENARIOS PANEL =============== */}
@@ -1451,38 +1490,6 @@ export default function WealthGuardTool({reportUserId}) {
           {!planFunded && <p role="alert" className="mt-2 font-semibold text-red-700">Plan does not meet all spending and legacy requirements. Unfunded spending/lump sums: ${Math.round(totalShortfall).toLocaleString()} over the projection.</p>}
         </div>
 
-
-        {/* =============== SCENARIO COMPARISON =============== */}
-        {showComparePanel && <div className="bg-white rounded-lg border border-blue-200 p-6 mb-6 no-print">
-          <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Compare retirement scenarios</h2><button aria-label="Close comparison" onClick={()=>setShowComparePanel(false)}><X size={20}/></button></div>
-          <p className="text-sm text-slate-600 mb-4">Choose two or three scenarios. Differences in client details or ages are highlighted for review. All are projected to a common end date; the saved scenarios are not changed.</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">{[[compareIdA,setCompareIdA],[compareIdB,setCompareIdB],[compareIdC,setCompareIdC]].map(([id,setId],i)=><label key={i} className="text-sm">Scenario {['A','B','C'][i]}{i===2?' (optional)':''}<select aria-label={`Scenario ${['A','B','C'][i]}`} value={id} onChange={e=>setId(e.target.value)} className="w-full border border-slate-300 rounded-md p-2 mt-1"><option value="">Select a scenario…</option><option value="current">Current plan</option>{scenarios.map(sc=><option key={sc.id} value={sc.id}>{sc.name}</option>)}</select></label>)}</div>
-          <label className="block text-sm mt-4">Final age for Scenario A’s younger client (or the client if single)<input aria-label="Comparison final age" type="number" min="1" max="360" step="1" value={comparisonEndAge} placeholder={comparison ? String(comparison.finalAge) : 'Automatic'} onChange={e=>setComparisonEndAge(e.target.value)} className="block border border-slate-300 rounded-md p-2 mt-1 w-48"/></label>
-          <p className="text-xs text-slate-500 mt-2">Leave blank to use the latest end date across the selected scenarios. Changing this field affects the comparison only.</p>
-          <label className="flex gap-2 items-center text-sm mt-4"><input type="checkbox" checked={reportComparison} onChange={e=>setReportComparison(e.target.checked)}/> Include comparison in report</label>
-          {comparisonError && <p role="alert" className="text-sm text-amber-800 mt-4">{comparisonError}</p>}
-          {comparison && <div className="mt-5">
-            <p className="text-sm mb-3">Common end: {comparison.endYears} years from today; Scenario A’s younger client is {comparison.finalAge}.</p>
-            {comparison.warnings.map(w=><p role="status" className="text-sm text-amber-800 mb-3" key={w}>{w}</p>)}
-            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="text-left p-2">Comparison</th>{comparison.columns.map(c=><th className="p-2 text-right max-w-xs break-words" key={c.id}>{c.label}</th>)}</tr></thead><tbody>{[
-              ...(comparison.agesDiffer ? [['Current ages (client / partner)',c=>`${c.summary.clientAge}${c.summary.partnerName ? ` / ${c.summary.partnerAge}` : ''}`],['Ages at comparison end',c=>`${c.summary.clientAge+comparison.endYears}${c.summary.partnerName ? ` / ${c.summary.partnerAge+comparison.endYears}` : ''}`]] : []),
-              ['Calculation mode',c=>c.summary.cashflowMode === 'quarterly' ? 'Quarterly Income Model' : 'Annual Income Model'],
-              ['Client retirement age',c=>c.summary.retirementAge],
-              ['Partner retirement age',c=>c.summary.partnerName ? c.summary.partnerRetirementAge : '—'],
-              ['Retirement years compared',c=>c.summary.projectionYears],
-              ["Annual spending (today’s NZD)",c=>`$${Math.round(c.summary.annualIncome).toLocaleString()}`],
-              ['Portfolio at first retirement (future NZD)',c=>`$${Math.round(c.summary.portfolioAtRetirement).toLocaleString()}`],
-              ['Accessible at first retirement (future NZD)',c=>`$${Math.round(c.summary.accessibleAtRetirement).toLocaleString()}`],
-              ["First-year withdrawal needed (today’s NZD)",c=>`$${Math.round(c.summary.firstYearDrawdown).toLocaleString()}`],
-              ['Projected spending / lump-sum shortfalls (future NZD)',c=>`$${Math.round(c.summary.totalShortfall).toLocaleString()}`],
-              ['Balance at common end date (future NZD)',c=>`$${Math.round(c.summary.finalBalance).toLocaleString()}`],
-              ['Remaining-balance target met?',c=>c.summary.legacyMet?'Yes':'No']
-            ].map(([label,get])=><tr className="border-t" key={label}><td className="p-2 text-slate-600">{label}</td>{comparison.columns.map(c=><td className="p-2 text-right" key={c.id}>{get(c)}</td>)}</tr>)}</tbody></table></div>
-            <div className="h-80 mt-5"><ResponsiveContainer width="100%" height="100%"><LineChart data={comparison.chart} margin={{left:20,right:15,top:10,bottom:10}}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="year"/><YAxis width={80} tickFormatter={v=>`$${Math.round(v/1000)}k`}/><Tooltip formatter={v=>`$${Number(v).toLocaleString()}`}/><Legend/>{comparison.columns.map((c,i)=><Line key={c.id} isAnimationActive={false} type="monotone" dataKey={'scenario'+i} name={c.label} stroke={['#293A61','#f97316','#16a34a'][i]} strokeDasharray={['','7 3','2 3'][i]} strokeWidth={2.5} dot={false}/>)}</LineChart></ResponsiveContainer></div>
-            <p className="text-xs text-slate-500">X-axis: years from today. Values: future NZD. {comparison.differences.length ? `Other inputs differ: ${comparison.differences.join(', ')}.` : 'Retirement dates are the only financial inputs changed; the end date is aligned.'}</p>
-            {comparison.relativeEvents && <p className="text-xs text-slate-500 mt-2">Retirement lump sums, care costs, spending reductions and first-year stress are timed relative to each scenario’s first retirement. Their calendar timing may change when retirement dates change.</p>}
-          </div>}
-        </div>}
 
         {/* =============== CLIENT INFO =============== */}
         <div id="sec-client" className="bg-white rounded-lg shadow-lg p-6 mb-6 avoid-break nav-anchor">
@@ -1788,6 +1795,8 @@ export default function WealthGuardTool({reportUserId}) {
         {/* =============== RETIREMENT PLANNING =============== */}
         <div id="sec-planning" className="bg-white rounded-lg shadow-lg p-6 mb-6 no-print nav-anchor">
           <h2 className="text-xl font-bold text-slate-800 mb-4">Retirement Planning</h2>
+          <OtherIncomeEditor sources={otherIncomeSources} onChange={setOtherIncomeSources} settings={{yearsUntilRetirement,accumulationLumpSums,retirementLumpSums}} clientAge={clientAge} partnerAge={partnerAge} isJoint={isJoint}/>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Years Until First Retirement</label>
@@ -2980,7 +2989,7 @@ export default function WealthGuardTool({reportUserId}) {
 
           {cashflowMode === 'quarterly' ? <div className="space-y-3 text-sm text-slate-700">
             <p>{QUARTERLY_RULES_TEXT}</p>
-            <p>Cash and term-deposit allocation recommendations use the first-retirement-year investment income gap after NZ Super and working income. Existing allocations are retained until you choose to apply a recommendation.</p>
+            <p>Cash and term-deposit allocation recommendations use the first-retirement-year investment income gap after NZ Super, working income and other income. Existing allocations are retained until you choose to apply a recommendation.</p>
             <details><summary className="cursor-pointer font-semibold">First retirement year: quarterly transfers</summary>
               <table className="w-full mt-3 text-xs"><thead><tr><th>Quarter</th><th>Required</th><th>From Income</th><th>From Capital Preservation</th><th>Spent</th><th>Shortfall</th></tr></thead><tbody>
                 {(projectionData.find(d=>d.year===yearsUntilRetirement)?.quarters || []).map(q=><tr key={q.quarter}>{[q.quarter,q.required,q.fromIncome,q.fromTerm,q.spent,q.shortfall].map((v,i)=><td className="p-2 text-right" key={i}>{i===0?v:`$${Math.round(v).toLocaleString()}`}</td>)}</tr>)}
@@ -3158,6 +3167,7 @@ export default function WealthGuardTool({reportUserId}) {
               <Tooltip formatter={(v) => `$${Number(v).toLocaleString("en-NZ", {maximumFractionDigits: 0})}`} labelFormatter={ageTooltipLabel}/>
               <Legend wrapperStyle={{paddingTop: '10px'}}/>
               <Line isAnimationActive={false} type="monotone" dataKey="Net Working Income" stroke="#16a34a" strokeWidth={2} dot={false}/>
+              <Line isAnimationActive={false} type="monotone" dataKey="Other Retirement Income" stroke="#0891b2" strokeWidth={2} dot={false}/>
               <Line isAnimationActive={false} type="monotone" dataKey="Required Drawdown" stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 4" dot={false}/>
               <Line isAnimationActive={false} type="monotone" dataKey="Annual Drawdown" stroke="#dc2626" strokeWidth={2} dot={false}/>
               <Line isAnimationActive={false} type="monotone" dataKey="Cumulative Drawdown" stroke="#7c3aed" strokeWidth={3} dot={false}/>
@@ -3373,4 +3383,5 @@ export default function WealthGuardTool({reportUserId}) {
     </div>
   );
 }
+
 

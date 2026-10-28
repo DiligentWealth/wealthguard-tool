@@ -8,6 +8,7 @@ const groups = [
  ['Net investment returns',['returns','accumulationReturns']],
  ['Regular contributions',['contributionAmount','contributionFrequency']],
  ['Employment income',['clientWorkingIncome','partnerWorkingIncome']],
+ ['Other retirement income',['otherIncomeSources']],
  ['KiwiSaver contributions',['ksEnabled','clientSalary','partnerSalary','clientKsRate','clientKsEmployer','partnerKsRate','partnerKsEmployer','clientEsctRate','partnerEsctRate']],
  ['NZ Super assumptions',['livingSituation','useGrossSuper','inflateSuper','clientSuperIneligible','partnerSuperIneligible']],
  ['Spending reductions',['incomeReductionEnabled','incomeReductionAfterYears','incomeReductionPercent']],
@@ -20,6 +21,7 @@ const groups = [
 function comparisonInputs(s) {
   const returns=s.returns??{cashSavings:0.25,capitalPreservation:4,incomeGenerator:5,steadyGrowth:5.5,strategicGrowth:7.5};
   return {
+    otherIncomeSources:(s.otherIncomeSources||[]).map(({amount,frequency,startYear,endYear,inflate,endWithDeposit})=>({amount,frequency,startYear,endYear:endYear??null,inflate:!!inflate,endWithDeposit:endWithDeposit||''})),
     annualIncome:s.annualIncome??0,cash:s.cash??0,termDeposits:s.termDeposits??0,
     currentInvestments:(s.currentInvestments||[]).filter(x=>x.amount>0).map(x=>({kiwiSaverMember:x.id===1?'client':x.id===2?'partner':null,amount:x.amount})).sort((a,b)=>stable(a).localeCompare(stable(b))),
     allocations:s.allocations??{cashSavings:3,termDeposit:12,incomePortfolio:30,balancedPortfolio:30,growthPortfolio:25},
@@ -65,3 +67,4 @@ export function buildComparison(selections, finalAge){
   const chart=Array.from({length:endYears+1},(_,year)=>Object.fromEntries([['year',year],...columns.map((x,i)=>['scenario'+i,x.summary.projectionData[year].Total])]));
   return {columns,endYears,finalAge:youngestAge+endYears,youngestAge,differences,relativeEvents,chart,warnings,agesDiffer};
 }
+

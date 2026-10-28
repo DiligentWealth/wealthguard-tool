@@ -49,3 +49,21 @@ test('same-named clients have distinct labelled controls and a preview error dis
  expect(screen.getByRole('alert')).toHaveTextContent('common projection end date');
  expect(screen.getByRole('button',{name:'Apply preview to calculator'})).toBeDisabled();
 });
+
+test('report comparison opens before saved scenarios, directly beneath report settings',async()=>{
+ render(<App/>);await waitFor(()=>expect(screen.getByRole('button',{name:'Scenarios (0)'})).toBeInTheDocument());
+ fireEvent.click(screen.getByRole('button',{name:'Scenarios (0)'}));
+ fireEvent.click(screen.getByRole('button',{name:'Export report'}));
+ fireEvent.click(screen.getByRole('checkbox',{name:/Include comparison in report/}));
+ const comparison=screen.getByRole('region',{name:'Scenario comparison options'}),saved=document.getElementById('saved-scenarios');
+ expect(comparison.compareDocumentPosition(saved)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+test('other income editor adds, edits and removes a stream without losing the calculator',async()=>{
+ render(<App/>);await waitFor(()=>expect(screen.getByRole('button',{name:'Scenarios (0)'})).toBeInTheDocument());
+ fireEvent.click(screen.getByRole('button',{name:'Add income source'}));
+ fireEvent.change(screen.getByLabelText('Income source 1 amount'),{target:{value:'12000'}});
+ expect(screen.getByLabelText('Income source 1 amount')).toHaveValue(12000);
+ fireEvent.click(screen.getByRole('button',{name:'Remove income source 1'}));
+ expect(screen.queryByLabelText('Income source 1 amount')).not.toBeInTheDocument();
+ expect(screen.getByRole('heading',{name:'Portfolio Projection'})).toBeInTheDocument();
+});
