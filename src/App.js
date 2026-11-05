@@ -207,6 +207,18 @@ function PrintableChart({ children, screenHeight = 360, printHeight = PRINT_CHAR
 // =============================================================================
 
 export default function WealthGuardTool({reportUserId}) {
+  // Remount only the calculator to create a fresh scenario without a browser refresh.
+  // Saved scenarios remain in Supabase and the selected calculator mode is retained.
+  const [session, setSession] = useState({ key: 0, guided: new URLSearchParams(window.location.search).get('view') === 'guided' });
+  const startNewScenario = (guided) => {
+    if (!window.confirm('Start a new scenario? Any unsaved changes to the current scenario will be lost. Saved scenarios will not be deleted.')) return;
+    setSession(prev => ({ key: prev.key + 1, guided }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  return <WealthGuardCalculator key={session.key} reportUserId={reportUserId} initialGuided={session.guided} onNewScenario={startNewScenario} />;
+}
+
+function WealthGuardCalculator({reportUserId, initialGuided, onNewScenario}) {
   // --- Client info ---
   const [cashflowMode, setCashflowMode] = useState('quarterly');
   const [clientName, setClientName]       = useState('');
@@ -372,7 +384,7 @@ export default function WealthGuardTool({reportUserId}) {
   // --- Scenarios ---
   const [scenarios, setScenarios] = useState([]);
   const [showScenariosPanel, setShowScenariosPanel] = useState(false);
-  const [guided,setGuided] = useState(()=>new URLSearchParams(window.location.search).get('view') === 'guided');
+  const [guided,setGuided] = useState(initialGuided);
   const [guidedStep,setGuidedStep] = useState('clients');
   const [otherIncomeSources,setOtherIncomeSources] = useState([]);
   const [showCalculationDetails, setShowCalculationDetails] = useState(false);
@@ -1359,7 +1371,12 @@ export default function WealthGuardTool({reportUserId}) {
               <img src={brandAsset('diligent-logo.png')} alt="Diligent Wealth" className="w-48 md:w-60 h-auto" />
               <div className="md:border-l md:border-slate-200 md:pl-6"><img src={brandAsset('wealthguard-logo.png')} alt="WealthGuard™" className="w-72 md:w-80 max-w-full h-auto" /><p className="text-xs text-slate-500 mt-1">Investment bucketing strategy</p></div>
             </div>
-            <div className="flex gap-2 no-print">
+            <div className="flex flex-wrap gap-2 no-print">
+              <button type="button" onClick={() => onNewScenario(guided)}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-700 text-white rounded-lg hover:bg-emerald-800 font-semibold shadow"
+                title="Start with a fresh set of client and retirement planning inputs">
+                <Plus size={18} /> New Scenario
+              </button>
               <button onClick={toggleScenariosPanel}
                 className="flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-semibold shadow">
                 <FolderOpen size={18} /> Scenarios ({scenarios.length})
