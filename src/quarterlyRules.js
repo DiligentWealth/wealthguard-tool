@@ -20,11 +20,22 @@ export function quarterlyLumpWithdrawal(state,recovery,amount) {
   let remaining=amount;
   remaining-=take(state,'cash',remaining);
   if(allMarketsDown(recovery)) remaining-=take(state,'termDep',remaining);
-  remaining-=take(state,'income',remaining);
+  // Preserve the regular income-paying bucket when a one-off capital expense can
+  // be met from growth assets that have recovered to their prior return peaks.
   remaining-=takeRecoveredGrowth(state,recovery,remaining);
+  remaining-=take(state,'income',remaining);
   // Reserve is also available once all three investment buckets are exhausted.
   if(investmentBucketsExhausted(state)) remaining-=take(state,'termDep',remaining);
   return amount-remaining;
+}
+// A large capital withdrawal can leave Income below its normal funding target.
+// Restore it immediately (rather than after a full year of quarterly payments),
+// using only growth assets that satisfy the existing market-recovery rule.
+export function restoreIncomeAfterLump(state,recovery,incomeTarget) {
+  if (!recovered(recovery,'income')) return 0;
+  const transferred=takeRecoveredGrowth(state,recovery,Math.max(0,incomeTarget-state.income));
+  state.income+=transferred;
+  return transferred;
 }
 export function runQuarterlyYear({state,recovery,annualReturns,annualNeed,incomeTarget,termTarget,record=true}) {
   const monthly=Object.fromEntries(Object.entries(annualReturns).map(([k,v])=>[k,Math.max(0,1+v/100)**(1/12)]));
