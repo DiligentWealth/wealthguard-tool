@@ -1,5 +1,5 @@
 import {otherIncomeForYear} from './otherIncome.js';
-import { newRecoveryState, runQuarterlyYear, quarterlyLumpWithdrawal } from './quarterlyRules.js';
+import { newRecoveryState, runQuarterlyYear, quarterlyLumpWithdrawal, restoreIncomeAfterLump } from './quarterlyRules.js';
 // WealthGuard annual cash-flow model. Monetary inputs are NZD.
 export const INFLATION_RATE = 0.02;
 const DEFAULT_VOLATILITIES = { incomeGenerator: 6, steadyGrowth: 10, strategicGrowth: 14 };
@@ -294,6 +294,9 @@ export function runSimulation(params) {
             if (quarterly) {
               const state = {cash,termDep,income,balanced,growth};
               entry.lumpSumShortfall += ls.amount - quarterlyLumpWithdrawal(state,recovery,ls.amount);
+              // Re-establish the regular quarterly income reserve straight away.
+              // This only sells recovered growth; locked KiwiSaver remains excluded.
+              restoreIncomeAfterLump(state,recovery,incomeTarget);
               ({cash,termDep,income,balanced,growth} = state);
             } else entry.lumpSumShortfall += ls.amount - retireCascade(ls.amount);
           } else {
